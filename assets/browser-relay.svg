@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="30" y1="20" x2="230" y2="250" gradientUnits="userSpaceOnUse"><stop stop-color="#aa8cff"/><stop offset=".5" stop-color="#7952e9"/><stop offset="1" stop-color="#4730a9"/></linearGradient>
+    <linearGradient id="route" x1="64" y1="70" x2="192" y2="185" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset="1" stop-color="#e3dbff"/></linearGradient>
+  </defs>
+  <rect x="12" y="16" width="232" height="232" rx="62" fill="#211542" opacity=".22"/>
+  <rect x="12" y="8" width="232" height="232" rx="62" fill="url(#tile)"/>
+  <rect x="13" y="9" width="230" height="230" rx="61" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2"/>
+  <path d="M66 126h36c23 0 27-48 51-48h35M102 126c23 0 27 48 51 48h35" fill="none" stroke="url(#route)" stroke-width="17" stroke-linecap="round"/>
+  <path d="m174 60 19 18-19 18m0 60 19 18-19 18" fill="none" stroke="url(#route)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="126" r="17" fill="#fff"/>
+  <circle cx="64" cy="126" r="6" fill="#9475f2"/>
+</svg>

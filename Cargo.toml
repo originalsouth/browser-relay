@@ -1,0 +1,14 @@
+[package]
+name = "browser-relay"
+version = "0.2.0"
+edition = "2024"
+description = "Choose Chromium, Firefox, or the clipboard when opening a link"
+license = "MIT"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11" }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

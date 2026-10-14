@@ -1,0 +1,25 @@
+window.relay { background: #17171e; color: #f2f1f8; font-family: "Inter", "Noto Sans", sans-serif; }
+.relay headerbar { background: #17171e; box-shadow: none; border: none; min-height: 32px; }
+.relay headerbar windowcontrols button { color: #aaa6ba; background: transparent; box-shadow: none; border: none; }
+.relay .brand { font-size: 13px; font-weight: 700; color: #c3bdd5; letter-spacing: .4px; }
+.relay .eyebrow { color: #aaa1c5; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; }
+.relay .heading { font-size: 29px; font-weight: 800; letter-spacing: -.8px; }
+.relay .subtitle { font-size: 13px; color: #aaa6ba; }
+.relay .preview { background: #202029; border: 1px solid #34313f; border-radius: 13px; padding: 15px; }
+.relay .preview-icon { color: #b7a0ff; }
+.relay .destination { font-size: 13px; font-weight: 650; color: #e5dff8; }
+.relay .url { font-size: 11px; color: #a9a5b8; }
+.relay button.route { background: #23232d; background-image: none; color: #f2f1f8; border: 1px solid #363442; border-radius: 14px; padding: 15px 17px; box-shadow: none; transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
+.relay button.route:hover { background: #2d293e; border-color: #76609e; box-shadow: 0 3px 12px alpha(#000, .12); }
+.relay button.route:active { background: #3c3154; border-color: #b99af8; box-shadow: inset 0 2px 5px alpha(#000, .2); }
+.relay button.route:focus-visible { outline: 2px solid #b99af8; outline-offset: 3px; }
+.relay button.route:disabled { opacity: .45; }
+.relay .route-title { font-size: 15px; font-weight: 700; }
+.relay .route-description { font-size: 11px; color: #aaa6ba; }
+.relay .key { background: #30303c; border: 1px solid #444151; border-radius: 6px; color: #c3bdd5; font-size: 11px; padding: 3px 7px; min-width: 9px; }
+.relay .copy-icon { color: #c0a7ff; }
+.relay .footer { font-size: 11px; color: #aaa6ba; }
+.relay .success { color: #99dfb9; }
+.relay .error { color: #ffb5b5; }
+window.relay.csd { border-radius: 16px; }
+window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
