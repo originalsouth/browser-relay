@@ -1,4 +1,7 @@
 window.relay { box-shadow: none; background: #17171e; color: #f2f1f8; font-family: "Inter", "Noto Sans", sans-serif; }
+/* Keep label colors inherited when the desktop applies :backdrop.
+   Class-specific colors below still distinguish secondary and status text. */
+.relay label { color: inherit; }
 .relay headerbar { background: #17171e; box-shadow: none; border: none; min-height: 32px; }
 .relay headerbar windowcontrols button { color: #aaa6ba; background: transparent; box-shadow: none; border: none; }
 .relay .brand { font-size: 13px; font-weight: 700; color: #c3bdd5; letter-spacing: .4px; }
@@ -23,3 +26,52 @@ window.relay { box-shadow: none; background: #17171e; color: #f2f1f8; font-famil
 .relay .error { color: #ffb5b5; }
 window.relay.csd { border-radius: 16px; }
 window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
+
+.relay .qr-code { background: #fff; border-radius: 9px; padding: 4px; }
+.relay .qr-caption { font-size: 11px; color: #b7a0ff; }
+.relay .qr-warning { background: #302a26; border: 1px solid #68513c; border-radius: 9px; padding: 3px; color: #e5b880; }
+.relay .qr-warning-title { font-size: 11px; font-weight: 700; }
+.relay .qr-warning-hint { font-size: 11px; color: #cab9a5; }
+
+.relay .inspection-card { background: #202029; border: 1px solid #34313f; border-radius: 12px; padding: 14px; }
+.relay .inspection-detail { font-size: 12px; color: #c9c5d6; }
+
+.relay .dashboard-title { font-size: 25px; font-weight: 750; color: #f2effa; letter-spacing: -.5px; }
+.relay .dashboard-badge { color: #c8b3f5; background: #2a2439; border: 1px solid #4b3c64; border-radius: 20px; padding: 5px 10px; font-size: 11px; }
+.relay .dashboard-card { background: linear-gradient(135deg, #24232e, #1e1e27); border: 1px solid #3b354b; border-radius: 15px; padding: 12px 17px; }
+.relay .dashboard-value { font-size: 23px; font-weight: 700; color: #eee8fa; letter-spacing: -.4px; }
+.relay .dashboard-value.success { color: #99dfb9; }
+.relay .warning-text { color: #eeb477; }
+.relay .dashboard-warning { background: #302a28; border: 1px solid #65503d; border-radius: 10px; padding: 8px 12px; }
+.relay .dashboard-addresses { font-family: monospace; font-size: 12px; color: #c3bdd5; }
+.relay .country-flag { font-size: 29px; }
+.relay .peer-selector > button { background: #292632; color: #e5dff8; border: 1px solid #443c54; border-radius: 8px; padding: 4px 8px; box-shadow: none; }
+.relay .dashboard-action > button { background: #30283e; color: #e3d8f9; border: 1px solid #554468; border-radius: 9px; padding: 8px 10px; box-shadow: none; transition: background 140ms ease, border-color 140ms ease; }
+.relay .dashboard-action > button:hover { background: #3b2f4e; border-color: #9c7dc7; }
+.relay .dashboard-action > button:disabled { opacity: .45; }
+.relay button.compact { padding: 8px 14px; border-radius: 9px; font-size: 12px; }
+.relay.inspection-popover > contents { background: #23212d; color: #f2f1f8; border: 1px solid #58486b; border-radius: 12px; padding: 16px; box-shadow: 0 8px 24px alpha(#000, .3); }
+.relay .inspection-log, .relay .inspection-log text { background: #23212d; color: #d9d3e7; font-size: 12px; }
+
+.relay .local-lists { background: #282433; border: 1px solid #41374f; border-radius: 10px; padding: 5px 10px; }
+.relay .list-title { color: #d9c6ff; font-size: 12px; font-weight: 700; letter-spacing: .8px; }
+.relay .list-note { color: #aba1bd; font-size: 10px; }
+.relay .list-badge { background: #211e2b; border: 1px solid #3c344a; border-radius: 7px; padding: 5px 9px; }
+.relay .list-kind { color: #aaa1ba; font-size: 11px; }
+.relay .list-state { font-size: 11px; font-weight: 650; }
+.relay .list-neutral { color: #d5c8ec; }
+.relay .list-match { color: #ffc27d; }
+.relay .list-unknown { color: #aaa1ba; }
+.relay .list-refresh > button { background: transparent; color: #baa4de; border: 1px solid transparent; border-radius: 7px; padding: 5px; min-height: 20px; min-width: 20px; box-shadow: none; }
+.relay .list-refresh > button:hover { background: #393047; border-color: #625077; color: #eadcff; }
+
+.relay .domain-insights { padding: 6px 13px; }
+.relay .insight-tile { background: #211e2b; border: 1px solid #41374f; border-radius: 10px; padding: 5px 11px; }
+.relay .insight-tile.popularity-tile { background: linear-gradient(120deg, #342942, #272333); border-color: #65507f; }
+.relay .insight-tile .list-kind { font-size: 9px; font-weight: 650; letter-spacing: .6px; color: #b7a9c9; }
+.relay .insight-tile .list-state { font-size: 20px; font-weight: 700; color: #decbff; letter-spacing: -.5px; }
+.relay .insight-tile .list-state.list-match { color: #ffc27d; }
+.relay .insight-tile .list-state.list-unknown { color: #aaa1ba; }
+.relay .insight-action > button { padding: 3px 8px; min-height: 20px; font-size: 11px; border-radius: 7px; }
+
+.relay .domain-insights .list-refresh > button { padding: 1px; min-height: 16px; }

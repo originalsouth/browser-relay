@@ -24,7 +24,7 @@ for path in "$bin" "$applications" "$state"; do
         exit 1
     fi
 done
-cargo build --release --locked
+CARGO_TARGET_DIR="$PWD/target" CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 cargo build --release --locked
 mkdir -p -- "$(dirname -- "$bin")" "$applications" "$state"
 # Save once, so reinstalling never replaces the original preferences with ourselves.
 if [[ $make_default == true && ! -f "$state/previous-defaults" ]]; then

@@ -7,8 +7,19 @@ license = "MIT"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11" }
+qrcode = { version = "0.14", default-features = false }
+
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "net"] }
+hickory-resolver = "0.26.3"
+surge-ping = "0.9"
+maxminddb = "0.29"
+url = "2.5"
+serde_json = "1"
+x509-parser = { version = "0.18", default-features = false }
+psl = "2"
 
 [profile.release]
-lto = true
+lto = "fat"
 strip = true
 codegen-units = 1

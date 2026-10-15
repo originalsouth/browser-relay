@@ -46,9 +46,9 @@ p.write_text(json.dumps(s))
         path.chmod(0o755)
     # The real build is checked separately; avoid depending on Cargo's HOME here.
     cargo = fake / 'cargo'
-    cargo.write_text('#!/bin/sh\nexit 0\n')
+    cargo.write_text("#!/usr/bin/python3\nimport os, sys\nassert sys.argv[1:] == ['build', '--release', '--locked']\nassert os.environ['CARGO_PROFILE_RELEASE_LTO'] == 'fat'\nassert os.environ['CARGO_PROFILE_RELEASE_CODEGEN_UNITS'] == '1'\nassert os.environ['CARGO_TARGET_DIR'] == os.path.join(os.getcwd(), 'target')\n")
     cargo.chmod(0o755)
-    env = dict(os.environ, HOME=str(home), PATH=f'{fake}:{os.environ["PATH"]}',
+    env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off', HOME=str(home), PATH=f'{fake}:{os.environ["PATH"]}',
                XDG_DATA_HOME=str(home / 'data'), XDG_STATE_HOME=str(home / 'state'))
     def run(script, *args):
         subprocess.run([str(ROOT / script), *args], cwd=ROOT, env=env, check=True)

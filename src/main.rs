@@ -1,5 +1,14 @@
+mod blocklist;
+mod domain_list;
+mod inspect;
+mod inspector_ui;
+mod list_cache;
+mod qr;
 mod relay;
+mod reputation;
+mod tranco;
 mod ui;
+mod whois;
 
 use relay::{Action, executable, execute};
 
@@ -12,12 +21,16 @@ const HELP: &str = "browser-relay — choose a browser or copy a link
 Usage: browser-relay [--terminal] [--] URL [URL ...]
        browser-relay --prompt
 
-Shows a desktop dialog with Chromium, Firefox, and Copy to clipboard.
+Shows a desktop dialog with browsers, clipboard, QR code, and link inspection.
+The terminal and Zenity choosers offer browsers and clipboard only.
 Multiple URLs open together or copy as newline-separated text.
 Cancel closes the dialog without opening anything.
 
 Options:
   --prompt    Ask for a link when launched without one
+  --update-lists  Download OISD and Tranco (including subdomains)
+  --update-tranco  Download the Tranco popularity index
+  --update-blocklists  Download OISD Big and NSFW for local inspection
   --terminal  Choose using stdin instead of a desktop dialog
   -h, --help  Show this help
   --version   Show the version
@@ -132,6 +145,24 @@ fn run() -> Result<()> {
                     terminal = true;
                     continue;
                 }
+                "--update-lists" | "--update-tranco" => {
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    if arg == "--update-tranco" {
+                        println!("{}", tranco::update(&cancel)?);
+                    } else {
+                        let (message, failed) = reputation::update(&cancel);
+                        if failed {
+                            return Err(message);
+                        }
+                        println!("{message}");
+                    }
+                    return Ok(());
+                }
+                "--update-blocklists" => {
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    println!("{}", blocklist::update(&cancel)?);
+                    return Ok(());
+                }
                 "--help" | "-h" => {
                     print!("{HELP}");
                     return Ok(());
@@ -178,7 +209,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("browser-relay: {error}");
-            if (env::var_os("WAYLAND_DISPLAY").is_some() || env::var_os("DISPLAY").is_some())
+            if !env::args().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--update-blocklists" | "--update-tranco" | "--update-lists"
+                )
+            }) && (env::var_os("WAYLAND_DISPLAY").is_some() || env::var_os("DISPLAY").is_some())
                 && let Some(zenity) = executable(&["zenity"])
             {
                 let _ = Command::new(zenity)

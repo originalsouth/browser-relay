@@ -47,6 +47,176 @@ fn destination(url: &str) -> String {
     }
 }
 
+fn qr_panel(code: Option<qrcode::QrCode>) -> gtk::Box {
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    panel.set_valign(gtk::Align::Center);
+    panel.set_halign(gtk::Align::End);
+    panel.set_hexpand(false);
+    if let Some(code) = code {
+        panel.add_css_class("qr-code");
+        panel.set_tooltip_text(Some("Scan with another device's camera to open this link"));
+        let drawing = gtk::DrawingArea::builder()
+            .content_width(crate::qr::SIDE)
+            .content_height(crate::qr::SIDE)
+            .build();
+        drawing.set_draw_func(move |_, cr, width, height| {
+            cr.set_antialias(gtk::cairo::Antialias::None);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            let _ = cr.paint();
+            let modules = code.width() + 2 * crate::qr::QUIET_ZONE;
+            let scale = width.min(height) / modules as i32;
+            if scale < 1 {
+                return;
+            }
+            let offset_x = (width - code.width() as i32 * scale) / 2;
+            let offset_y = (height - code.width() as i32 * scale) / 2;
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            for y in 0..code.width() {
+                for x in 0..code.width() {
+                    if code[(x, y)] == qrcode::Color::Dark {
+                        cr.rectangle(
+                            f64::from(offset_x + x as i32 * scale),
+                            f64::from(offset_y + y as i32 * scale),
+                            f64::from(scale),
+                            f64::from(scale),
+                        );
+                    }
+                }
+            }
+            let _ = cr.fill();
+        });
+        panel.append(&drawing);
+    } else {
+        panel.add_css_class("qr-warning");
+        panel.set_size_request(crate::qr::SIDE + 8, crate::qr::SIDE + 8);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 9);
+        content.set_valign(gtk::Align::Center);
+        content.set_vexpand(true);
+        let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+        icon.set_pixel_size(26);
+        content.append(&icon);
+        let title = label("Link too long for QR", "qr-warning-title");
+        title.set_xalign(0.5);
+        content.append(&title);
+        let hint = label(
+            "Copy the link to
+share it instead.",
+            "qr-warning-hint",
+        );
+        hint.set_justify(gtk::Justification::Center);
+        hint.set_xalign(0.5);
+        content.append(&hint);
+        panel.append(&content);
+    }
+    panel
+}
+
+fn route_button(
+    title: &str,
+    description: &str,
+    icon_name: &str,
+    key: &str,
+    available: bool,
+) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("route");
+    button.set_sensitive(available);
+    button.set_cursor_from_name(Some("pointer"));
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    let image = gtk::Image::from_icon_name(icon_name);
+    image.set_pixel_size(32);
+    if matches!(key, "3" | "4" | "5") {
+        image.add_css_class("copy-icon");
+    }
+    row.append(&image);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    text.set_hexpand(true);
+    text.append(&label(title, "route-title"));
+    text.append(&label(
+        if available {
+            description
+        } else {
+            "Not installed"
+        },
+        "route-description",
+    ));
+    row.append(&text);
+    let shortcut = label(key, "key");
+    shortcut.set_valign(gtk::Align::Center);
+    row.append(&shortcut);
+    button.set_child(Some(&row));
+    button
+}
+
+fn show_qr(parent: &gtk::Window, link: &str, multiple: bool) {
+    // Generate and render only after the user explicitly requests it.
+    let code = crate::qr::encode(link);
+    let available = code.is_some();
+    let popup = gtk::Window::builder()
+        .title("Link QR code")
+        .transient_for(parent)
+        .modal(true)
+        .destroy_with_parent(true)
+        .default_width(280)
+        .resizable(false)
+        .icon_name("browser-relay")
+        .build();
+    popup.add_css_class("relay");
+    let header = gtk::HeaderBar::new();
+    header.set_decoration_layout(Some(":close"));
+    header.set_title_widget(Some(&label("QR code", "brand")));
+    popup.set_titlebar(Some(&header));
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    body.set_margin_top(12);
+    body.set_margin_bottom(24);
+    let title = label(&destination(link), "destination");
+    title.set_xalign(0.5);
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    title.set_max_width_chars(26);
+    body.append(&title);
+    let panel = qr_panel(code);
+    panel.set_halign(gtk::Align::Center);
+    body.append(&panel);
+    if available {
+        let caption = label(
+            if multiple {
+                "Scan to open the first link"
+            } else {
+                "Scan to open on your phone"
+            },
+            "qr-caption",
+        );
+        caption.set_xalign(0.5);
+        body.append(&caption);
+    }
+    let close = gtk::Button::with_label("Hide QR code");
+    close.add_css_class("route");
+    let weak_popup = popup.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(popup) = weak_popup.upgrade() {
+            popup.close();
+        }
+    });
+    body.append(&close);
+    popup.set_child(Some(&body));
+    let keys = gtk::EventControllerKey::new();
+    let weak_popup = popup.downgrade();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            if let Some(popup) = weak_popup.upgrade() {
+                popup.close();
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    popup.add_controller(keys);
+    popup.present();
+    close.grab_focus();
+}
+
 fn initialize() -> Result<()> {
     if gtk::is_initialized() {
         return Ok(());
@@ -147,8 +317,9 @@ pub fn run(urls: &[String]) -> Result<()> {
     link.add_css_class("preview-icon");
     link.set_pixel_size(20);
     preview.append(&link);
-    let details = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let details = gtk::Box::new(gtk::Orientation::Vertical, 6);
     details.set_hexpand(true);
+    details.set_valign(gtk::Align::Center);
     let title = if urls.len() > 1 {
         format!("{} links · {}", urls.len(), destination(&urls[0]))
     } else {
@@ -170,7 +341,7 @@ pub fn run(urls: &[String]) -> Result<()> {
     body.append(&eyebrow);
 
     let routes = gtk::Box::new(gtk::Orientation::Vertical, 9);
-    let status = label("1 / 2 / 3 to choose   ·   Esc to dismiss", "footer");
+    let status = label("1 / 2 / 3 / 4 / 5 to choose   ·   Esc to dismiss", "footer");
     status.set_margin_top(19);
     status.set_wrap(true);
     status.set_max_width_chars(48);
@@ -203,38 +374,12 @@ pub fn run(urls: &[String]) -> Result<()> {
     ];
     let mut buttons = Vec::new();
     for (action, title, description, icon_name, key, available) in choices {
-        let button = gtk::Button::new();
-        button.add_css_class("route");
-        button.set_sensitive(available);
-        button.set_cursor_from_name(Some("pointer"));
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-        let image = gtk::Image::from_icon_name(icon_name);
-        image.set_pixel_size(32);
-        if action == Action::Copy {
-            image.add_css_class("copy-icon");
-        }
-        row.append(&image);
-        let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
-        text.set_hexpand(true);
         let title = if action == Action::Copy && urls.len() > 1 {
             "Copy links"
         } else {
             title
         };
-        text.append(&label(title, "route-title"));
-        text.append(&label(
-            if available {
-                description
-            } else {
-                "Not installed"
-            },
-            "route-description",
-        ));
-        row.append(&text);
-        let shortcut = label(key, "key");
-        shortcut.set_valign(gtk::Align::Center);
-        row.append(&shortcut);
-        button.set_child(Some(&row));
+        let button = route_button(title, description, icon_name, key, available);
         routes.append(&button);
         let busy = busy.clone();
         let routes = routes.downgrade();
@@ -300,6 +445,42 @@ pub fn run(urls: &[String]) -> Result<()> {
         });
         buttons.push(button);
     }
+    let qr_button = route_button(
+        "Show QR code",
+        "Reveal for another device",
+        "camera-photo-symbolic",
+        "4",
+        true,
+    );
+    let weak_window = window.downgrade();
+    let qr_link = urls[0].clone();
+    let multiple = urls.len() > 1;
+    qr_button.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            show_qr(&window, &qr_link, multiple);
+        }
+    });
+    routes.append(&qr_button);
+    buttons.push(qr_button);
+    let inspect_button = route_button(
+        "Inspect link",
+        "Contacts this URL · checks connection & lists",
+        "security-high-symbolic",
+        "5",
+        true,
+    );
+    inspect_button.set_tooltip_text(Some(
+        "Contacts the destination to check its connection; online reputation lookups are optional",
+    ));
+    let weak_window = window.downgrade();
+    let inspect_link = urls[0].clone();
+    inspect_button.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            crate::inspector_ui::show(&window, &inspect_link, multiple);
+        }
+    });
+    routes.append(&inspect_button);
+    buttons.push(inspect_button);
     body.append(&routes);
     body.append(&status);
     let keys = gtk::EventControllerKey::new();
@@ -315,6 +496,8 @@ pub fn run(urls: &[String]) -> Result<()> {
             gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
             gdk::Key::_2 | gdk::Key::KP_2 => Some(1),
             gdk::Key::_3 | gdk::Key::KP_3 => Some(2),
+            gdk::Key::_4 | gdk::Key::KP_4 => Some(3),
+            gdk::Key::_5 | gdk::Key::KP_5 => Some(4),
             _ => None,
         };
         if let Some(index) = index {
