@@ -1,4 +1,4 @@
-window.relay { background: #17171e; color: #f2f1f8; font-family: "Inter", "Noto Sans", sans-serif; }
+window.relay { box-shadow: none; background: #17171e; color: #f2f1f8; font-family: "Inter", "Noto Sans", sans-serif; }
 .relay headerbar { background: #17171e; box-shadow: none; border: none; min-height: 32px; }
 .relay headerbar windowcontrols button { color: #aaa6ba; background: transparent; box-shadow: none; border: none; }
 .relay .brand { font-size: 13px; font-weight: 700; color: #c3bdd5; letter-spacing: .4px; }
