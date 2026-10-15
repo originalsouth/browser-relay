@@ -1,4 +1,5 @@
-use crate::{Action, Result, executable, execute};
+use crate::Result;
+use crate::relay::{Action, executable, execute};
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -65,8 +66,7 @@ fn initialize() -> Result<()> {
     Ok(())
 }
 
-pub fn run(urls: &[String]) -> Result<()> {
-    initialize()?;
+fn window() -> (gtk::Window, gtk::Box, glib::MainLoop) {
     let main_loop = glib::MainLoop::new(None, false);
     let window = gtk::Window::builder()
         .title("Browser Relay")
@@ -84,7 +84,36 @@ pub fn run(urls: &[String]) -> Result<()> {
     body.set_margin_end(28);
     body.set_margin_top(2);
     body.set_margin_bottom(24);
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .child(&body)
+        .build();
+    window.set_child(Some(&scroll));
+    let loop_clone = main_loop.clone();
+    window.connect_close_request(move |_| {
+        loop_clone.quit();
+        glib::Propagation::Proceed
+    });
+    let keys = gtk::EventControllerKey::new();
+    let weak_window = window.downgrade();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            if let Some(window) = weak_window.upgrade() {
+                window.close();
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(keys);
+    (window, body, main_loop)
+}
 
+pub fn run(urls: &[String]) -> Result<()> {
+    initialize()?;
+    let (window, body, main_loop) = window();
     let brand = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     brand.append(&icon()?);
     brand.append(&label("Browser Relay", "brand"));
@@ -208,11 +237,16 @@ pub fn run(urls: &[String]) -> Result<()> {
         button.set_child(Some(&row));
         routes.append(&button);
         let busy = busy.clone();
-        let routes = routes.clone();
-        let status = status.clone();
-        let window = window.clone();
+        let routes = routes.downgrade();
+        let status = status.downgrade();
+        let window = window.downgrade();
         let urls = urls.to_vec();
         button.connect_clicked(move |_| {
+            let (Some(routes), Some(status), Some(window)) =
+                (routes.upgrade(), status.upgrade(), window.upgrade())
+            else {
+                return;
+            };
             if busy.replace(true) {
                 return;
             }
@@ -268,15 +302,7 @@ pub fn run(urls: &[String]) -> Result<()> {
     }
     body.append(&routes);
     body.append(&status);
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .child(&body)
-        .build();
-    window.set_child(Some(&scroll));
     let keys = gtk::EventControllerKey::new();
-    let weak_window = window.downgrade();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
@@ -284,12 +310,6 @@ pub fn run(urls: &[String]) -> Result<()> {
                 | gdk::ModifierType::SUPER_MASK,
         ) {
             return glib::Propagation::Proceed;
-        }
-        if key == gdk::Key::Escape {
-            if let Some(window) = weak_window.upgrade() {
-                window.close();
-            }
-            return glib::Propagation::Stop;
         }
         let index = match key {
             gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
@@ -306,11 +326,6 @@ pub fn run(urls: &[String]) -> Result<()> {
         glib::Propagation::Proceed
     });
     window.add_controller(keys);
-    let loop_clone = main_loop.clone();
-    window.connect_close_request(move |_| {
-        loop_clone.quit();
-        glib::Propagation::Proceed
-    });
     window.present();
     main_loop.run();
     Ok(())
@@ -319,28 +334,12 @@ pub fn run(urls: &[String]) -> Result<()> {
 /// Desktop launchers have no URL; ask for one before displaying the chooser.
 pub fn prompt() -> Result<Option<String>> {
     initialize()?;
-    let main_loop = glib::MainLoop::new(None, false);
+    let (window, body, main_loop) = window();
     let result = Rc::new(std::cell::RefCell::new(None));
-    let window = gtk::Window::builder()
-        .title("Browser Relay")
-        .default_width(460)
-        .resizable(false)
-        .icon_name("browser-relay")
-        .build();
-    window.add_css_class("relay");
-    let header = gtk::HeaderBar::new();
-    header.set_decoration_layout(Some(":close"));
-    header.set_title_widget(Some(&label("Browser Relay", "brand")));
-    window.set_titlebar(Some(&header));
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    for set_margin in [
-        gtk::Box::set_margin_start,
-        gtk::Box::set_margin_end,
-        gtk::Box::set_margin_top,
-        gtk::Box::set_margin_bottom,
-    ] {
-        set_margin(&body, 24);
-    }
+    body.set_spacing(16);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    body.set_margin_top(24);
     let image = icon()?;
     image.set_halign(gtk::Align::Start);
     body.append(&image);
@@ -358,9 +357,11 @@ pub fn prompt() -> Result<Option<String>> {
     let next = gtk::Button::with_label("Choose destination →");
     next.add_css_class("route");
     next.set_sensitive(false);
-    let next_clone = next.clone();
+    let weak_next = next.downgrade();
     entry.connect_changed(move |entry| {
-        next_clone.set_sensitive(crate::validate_link(entry.text().trim()).is_ok());
+        if let Some(next) = weak_next.upgrade() {
+            next.set_sensitive(crate::validate_link(entry.text().trim()).is_ok());
+        }
     });
     let result_clone = result.clone();
     let weak_window = window.downgrade();
@@ -374,31 +375,15 @@ pub fn prompt() -> Result<Option<String>> {
             }
         }
     });
-    let next_clone = next.clone();
+    let weak_next = next.downgrade();
     entry.connect_activate(move |_| {
-        if next_clone.is_sensitive() {
-            next_clone.emit_clicked();
+        if let Some(next) = weak_next.upgrade()
+            && next.is_sensitive()
+        {
+            next.emit_clicked();
         }
     });
     body.append(&next);
-    window.set_child(Some(&body));
-    let keys = gtk::EventControllerKey::new();
-    let weak_window = window.downgrade();
-    keys.connect_key_pressed(move |_, key, _, _| {
-        if key == gdk::Key::Escape {
-            if let Some(window) = weak_window.upgrade() {
-                window.close();
-            }
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
-    window.add_controller(keys);
-    let loop_clone = main_loop.clone();
-    window.connect_close_request(move |_| {
-        loop_clone.quit();
-        glib::Propagation::Proceed
-    });
     window.present();
     entry.grab_focus();
     main_loop.run();

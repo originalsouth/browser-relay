@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
                GSK_RENDERER='cairo', CAPTURE=str(capture), GTK_A11Y='none')
     env.pop('WAYLAND_DISPLAY', None)
     env.pop('BROWSER_RELAY_DIALOG', None)
-    link = 'https://example.com/a-guide-to-small-delightful-things?from=terminal&hello=world'
+    link = 'https://github.com/originalsouth/browser-relay'
 
     def start(extra=None, links=None):
         proc = subprocess.Popen([str(BINARY), *(links or [link])], env=env | (extra or {}),

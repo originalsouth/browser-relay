@@ -1,86 +1,72 @@
 # Browser Relay
 
-A small Linux browser chooser written in Rust with GTK 4. When
-`xdg-open` opens a link, a styled native chooser offers **Chromium**, **Firefox**, or
-**Copy to clipboard**. Cancel does nothing. Multiple links open together or copy
-as newline-separated text.
+A Linux link handler written in Rust and GTK 4. It asks whether to open a link
+in Chromium or Firefox, or copy it to the clipboard.
 
-## Build and install
+[![Browser Relay preview](assets/preview.png)](https://github.com/originalsouth/browser-relay)
 
-Requires Rust/Cargo, Bash, `pkg-config`, GTK 4 development libraries,
-`xdg-utils`, and your browsers on `PATH`. For example, GTK development files
-are in `libgtk-4-dev` on Debian/Ubuntu or `gtk4` on Arch.
-Clipboard support uses `wl-copy` from `wl-clipboard` on Wayland, or `xclip`/`xsel`
-on X11. If Wayland copying fails and X11 is available, it tries X11.
+## Install
+
+Build dependencies: Rust/Cargo, `pkg-config`, and GTK 4 development files
+(`libgtk-4-dev` on Debian/Ubuntu; `gtk4` on Arch).
+
+Runtime dependencies: GTK 4, `xdg-utils`, and the browsers you want to use.
+Clipboard support requires `wl-copy` on Wayland or `xclip`/`xsel` on X11.
+The installer uses Bash.
 
 ```sh
-cd ~/Projects/browser-relay
+git clone https://github.com/originalsouth/browser-relay.git
+cd browser-relay
 ./install.sh
 xdg-open 'https://example.com'
 ```
 
-The installer builds a release binary, installs it at
-`~/.local/bin/browser-relay`, creates a desktop entry under
-`${XDG_DATA_HOME:-~/.local/share}/applications`, and selects it as the default
-browser for HTTP/HTTPS. This is a desktop-wide preference: other applications
-that honor your default browser will also show the chooser. Applications that
-explicitly launch a browser bypass it. A `BROWSER` environment variable may also
-override desktop preferences in some `xdg-open` environments.
+This installs to `~/.local/bin` and registers Browser Relay as the desktop's
+HTTP/HTTPS handler. It affects applications that use the default browser,
+including `xdg-open`. Applications that launch a browser directly bypass it;
+`BROWSER` can also override desktop preferences.
 
-Previous defaults are recorded once under
-`${XDG_STATE_HOME:-~/.local/state}/browser-relay/previous-defaults`. Reinstalling
-updates the binary without overwriting that record. To install without changing
-the default, use `./install.sh --no-default`.
+Installer options:
 
-## Plasma desktop shortcut
+- `--no-default`: install without changing browser preferences.
+- `--desktop`: also add a shortcut to the configured desktop directory.
 
-Run `./install.sh --no-default --desktop` to add an executable Browser Relay
-shortcut to your configured desktop folder. Launching it (or the application
-menu entry) asks you to paste a link, then opens the chooser. Dropped/passed URLs
-skip the input step. Uninstall removes the desktop shortcut too.
+The desktop shortcut and application-menu entry ask for a link when opened.
 
-## The chooser
-
-A custom violet relay icon, dark palette, browser icons, and large single-click
-buttons. Hover and press states give feedback; Tab and Enter provide keyboard
-navigation. Press **1** for Chromium, **2** for Firefox, **3** to copy, or **Esc**
-to dismiss. Missing browsers are disabled. Copying shows a brief confirmation;
-errors stay in the chooser so you can retry or choose another destination.
-The URL preview truncates visually and exposes the full links in its tooltip.
-
-The SVG icon and CSS are in `assets/` and embedded into the Rust binary. The
-installer also installs the icon into the desktop icon theme. Zenity is optional:
-`BROWSER_RELAY_DIALOG=zenity browser-relay URL` uses the original simple chooser.
-
-## Direct use
+## Use
 
 ```sh
-cargo run -- 'https://example.com'
-cargo run -- 'https://example.com/one' 'https://example.com/two'
-cargo run -- --terminal 'https://example.com'
-cargo run -- --help
+browser-relay 'https://example.com'
+browser-relay --terminal 'https://example.com'
+browser-relay --prompt
 ```
 
-The desktop dialog needs an active graphical session. `--terminal` provides an
-interactive numbered chooser; clipboard copying still needs a desktop session.
-Browser detection tries `chromium` then `chromium-browser`, and `firefox` then
-`firefox-esr`. URLs are passed as individual arguments without shell evaluation.
-Local HTML paths and `file:` URLs are also supported. Controls and arguments
-beginning with `-` are rejected. Long links are shortened only in the preview;
-the full original link is opened or copied.
+Choose a button, press **1**, **2**, or **3**, or use **Tab** and **Enter**.
+**Esc** cancels. The chooser uses a dark theme with violet accents. Missing browsers are disabled;
+a failed action leaves the chooser open so you can try another option.
+
+Multiple links are opened together or copied as newline-separated text. Local
+file paths and `file:` URLs work too. Links are passed as separate arguments,
+without a shell. The clipboard needs a graphical session even in terminal mode.
+
+Browser lookup uses `PATH`: `chromium` or `chromium-browser`, and `firefox` or
+`firefox-esr`. The optional `BROWSER_RELAY_DIALOG=zenity` setting uses a basic
+Zenity chooser instead of the GTK window.
 
 ## Uninstall
 
-```sh
-./uninstall.sh
-```
+Run `./uninstall.sh`. Saved defaults are restored where Browser Relay is still
+selected. Later browser choices are preserved. The installed binary, icon, and
+shortcuts are removed; the source directory remains.
 
-Restores recorded defaults still assigned to Browser Relay and preserves browser
-choices changed since installation. Associations that originally had no default
-fall back to the desktop's available handlers after the desktop entry is removed.
-The source directory is retained.
+Desktop files and icons use `XDG_DATA_HOME` (default `~/.local/share`). The
+original browser associations are saved once in
+`${XDG_STATE_HOME:-~/.local/state}/browser-relay/previous-defaults`.
 
-## Checks
+## Development
+
+`src/main.rs` handles arguments and terminal/Zenity interaction. `src/relay.rs`
+launches browsers and clipboard helpers. `src/ui.rs` contains the GTK interface.
 
 ```sh
 cargo fmt --check
@@ -89,14 +75,17 @@ cargo test
 shellcheck install.sh uninstall.sh
 cargo build --release --locked
 python3 tests/install.py
-# Optional native GUI checks (Xvfb, xdotool, ImageMagick):
-xvfb-run -a -s "-screen 0 1280x1024x24" python3 tests/gui.py
 ```
 
-Routing integration tests use the Zenity fallback with fake dialog, browser,
-and clipboard executables; they do not
-open browsers, display dialogs, or change your clipboard. The Python installer
-test uses a temporary home and fake XDG commands to verify installation,
-reinstallation, and restoration without changing desktop preferences.
+The routing tests use fake executables; the installer tests use a temporary
+home and fake XDG tools. Native GUI tests additionally need Xvfb, xdotool, and
+ImageMagick:
 
-Desktop integration follows the [freedesktop Exec specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/exec-variables.html).
+```sh
+xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/gui.py
+```
+
+These checks do not open your browsers or modify your desktop preferences or
+clipboard. The GUI test captures its windows under `/tmp/browser-relay-*.png`.
+
+Licensed under the [MIT license](LICENSE).
