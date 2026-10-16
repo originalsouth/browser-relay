@@ -78,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
         proc = subprocess.Popen([str(ROOT/'target/debug/browser-relay'),link],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
             parent = window(proc,'^Browser Relay$')
-            key('5')
+            key('ctrl+i')
             popup = window(proc,'^Inspect link$')
             time.sleep(1.5)
             before = capture_text(popup,folder/'before.png')
@@ -101,6 +101,7 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
             key('Escape')
             out, err = proc.communicate(timeout=5)
             assert proc.returncode == 0 and b'CRITICAL' not in err, (out,err)
+            assert b'reported min width' not in err and b'reported min height' not in err, err
         finally:
             if proc.poll() is None:
                 proc.kill()

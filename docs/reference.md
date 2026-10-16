@@ -4,16 +4,18 @@
 
 ## Using Browser Relay
 
-Choose a button, press **1–5**, or use **Tab** and **Enter**. **Esc** cancels.
-The chooser uses a dark theme with violet accents. Missing browsers are disabled;
-a failed action leaves the chooser open so you can try another option.
+Choose a button, press its displayed number, or use **Tab** and **Enter**.
+The first nine choices have numeric shortcuts; **Ctrl+C** copies, **Ctrl+R** reveals QR,
+and **Ctrl+I** inspects regardless of browser count. **Q/Esc** dismisses the chooser unless an open or copy action is still finishing. The dark violet
+chooser scrolls for longer browser lists; Copy, QR and Inspect work even when
+no browser is installed. A failed launch leaves the chooser open.
 
-**Show QR code** (**4**) reveals a locally generated code for the first link.
+**Show QR code** (**Ctrl+R**) reveals a locally generated code for the first link.
 It stays hidden until requested; **Esc** or **Hide QR code** dismisses it.
 Links over 106 UTF-8 bytes show a warning instead to keep the compact code readable.
 Opening and copying still use the complete link.
 
-**Inspect link** (**5**) checks the first link in a compact dashboard: DNS addresses,
+**Inspect link** (**Ctrl+I**) checks the first link in a compact dashboard: DNS addresses,
 HTTP redirects, TLS validation, certificate subject and issuer, connected peers,
 local GeoIP with country flags, and eight ping probes per peer. The IP selector
 switches location and latency results together. **Details & privacy** opens the
@@ -71,7 +73,9 @@ excluding non-web DNS entries. It covers listed subdomains, not every subdomain.
 Caches live in `${XDG_DATA_HOME:-~/.local/share}/browser-relay/` as `oisd.bin` and
 `tranco.bin`. `BROWSER_RELAY_OISD_DIR` and `BROWSER_RELAY_TRANCO_DIR` override their
 directories. Packed text, 32-bit offsets and binary search keep lookups compact
-and allocation-free; validated indexes are shared between checks.
+and allocation-free; validated indexes are shared between checks. Desktop decoding
+budgets allocations from the file size (plus at most 1 MB for Tranco rank validation),
+rejecting forged lengths before allocating. Files stream directly into index storage.
 OISD lists are capped at 32 MiB each, Tranco CSV at 64 MiB; download redirects
 and cookies are disabled.
 
@@ -133,23 +137,75 @@ Multiple links are opened together or copied as newline-separated text. Local
 file paths and `file:` URLs work too. Links are passed as separate arguments,
 without a shell. The clipboard needs a graphical session even in terminal mode.
 
-Browser lookup uses `PATH`: `chromium` or `chromium-browser`, and `firefox` or
-`firefox-esr`. The optional `BROWSER_RELAY_DIALOG=zenity` setting uses a basic
-Zenity chooser instead of the GTK window.
+Browsers come from the [GIO desktop registry](https://docs.gtk.org/gio/iface.AppInfo.html):
+visible applications registered for HTTP or HTTPS, with an available executable
+and URL support. User desktop overrides are respected; Browser Relay, indirect
+openers and duplicate launches are excluded. Deduplication resolves executable
+symlinks and treats `%u`/`%U` alike, while retaining profile and wrapper arguments. Entries are sorted by name, retaining
+launch arguments and icons, including exported Flatpak/Snap desktop entries.
+Chromium and Firefox also have a PATH fallback if no usable registration exists;
+explicitly hidden registrations stay hidden.
+Desktop launch commands use GIO's Exec expansion; URL text is never evaluated as a shell command.
+
+`--terminal` and `BROWSER_RELAY_DIALOG=zenity` use the same discovered browsers
+and offer copying. In terminal mode, **c** copies and **q** cancels. VirusTotal's
+confirmation names its browser: the configured HTTPS handler, the saved pre-relay
+handler, then Chromium/Firefox, then another available browser. Browser Relay
+itself is excluded. Discovery runs once in a background worker; the chooser stays
+responsive while it loads; a discovery failure still leaves Copy, QR and Inspect
+available. VirusTotal can recover through a Chromium/Firefox PATH launcher if
+discovery failed, while respecting hidden registrations. This fallback is resolved
+once on the discovery worker, never while rendering a report. Desktop browser launches
+carry a GDK activation context;
+the compositor still controls focus.
+
+Existing local files take precedence over ambiguous names such as `notes.md`,
+`invoice.zip` or `github.com`; their names are not rewritten into remote hosts.
+Use an explicit `https://…` URL to choose the website. Without a matching local
+file, recognized public hostnames open over HTTPS and other input retains the
+browser's address/search behavior. Copying always keeps the original input.
+Empty and relative PATH entries are ignored, including for desktop launch commands.
+With PATH unset, lookup uses `/usr/local/bin`, `/usr/bin` and `/bin`.
+
+Domain insight colors describe individual signals: OISD Big matches are red,
+adult/shock matches orange, and no matches green. Unknown results stay gray.
+Tranco uses `a = atan(2 * (log10(rank) - 5))`, normalized as
+`(a - atan(-10)) / (atan(2) - atan(-10))`: #1 is 0 (green), #1,000,000
+is 1 (red). The bend is near #100,000; rank #4,821 scores about 0.10 and stays
+green. Unranked domains use the red endpoint; missing data and IP addresses
+stay gray. Parent-only matches remain unranked/red; the caption shows the parent's
+rank as context without using it for the hostname's colour. Stale data is marked;
+colors do not establish safety, and popularity never overrides a list warning.
+
+## GTK timing warnings
+
+GTK 4.24.1 can report `Duplicate call to gdk_frame_timings_presented()` on
+Wayland when surfaces sharing a frame clock receive different presentation times.
+GTK's development branch [reworks that handling](https://github.com/GNOME/gtk/commit/ca28c21845624205b3b1de2175868d3efcf2950d),
+including [feedback from multiple Wayland surfaces](https://github.com/GNOME/gtk/commit/2da76eb2c7222a99db5168bc0884668e7cc9ac52).
+The fix is not in 4.24.1. Browser Relay keeps these diagnostics visible.
+
+Changing renderer or disabling Wayland presentation feedback did not reliably
+avoid the warnings in local testing. `--terminal` bypasses the graphical toolkit
+when needed; it offers browser selection and copying.
 
 ## Development
 
-`src/main.rs` handles arguments and terminal/Zenity interaction. `src/relay.rs`
-launches browsers and clipboard helpers. `src/ui.rs` contains the chooser;
-`src/inspector_ui.rs` renders reports. `src/inspect.rs` implements checks and privacy
-boundaries, and `src/whois.rs` handles registration lookups. `src/domain_list.rs`
-contains the packed OISD and Tranco indexes; `src/list_cache.rs` shares validated
-snapshots and handles bounded downloads and atomic cache replacement.
+Linux's GTK interface and desktop integration live in `main.rs`, `browser.rs`,
+`relay.rs`, `ui.rs` and `inspector_ui.rs`. `inspect.rs`, `whois.rs` and
+`list_cache.rs` provide Linux transport and storage-location adapters.
+
+`src/lib.rs` exposes the common Rust core: URL rules, redirect consent and limits,
+certificate and RDAP parsing, QR generation, GeoIP, packed domain indexes, reputation
+assessments and atomic caches. Linux uses it directly; the [iOS app and Share
+extension](ios.md) use the C/JSON boundary in `mobile.rs`. UI, clipboard, browser
+launching, container paths and network transport stay at the platform boundary.
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+cargo test --no-default-features --features mobile --lib
 cargo audit
 cargo audit --file fuzz/Cargo.lock
 shellcheck install.sh uninstall.sh
@@ -157,8 +213,8 @@ cargo build --release --locked
 python3 tests/install.py
 ```
 
-The routing tests use fake executables; the installer tests use a temporary
-home and fake XDG tools. Native GUI tests additionally need Xvfb, xdotool, ImageMagick, and
+The routing tests use fake executables and a private D-Bus session (`dbus-run-session`);
+the installer tests use a temporary home and fake XDG tools. Native GUI tests additionally need Xvfb, xdotool, ImageMagick, and
 `zbarimg` (to decode QR codes from the captured windows):
 
 ```sh
@@ -170,8 +226,20 @@ Local TLS/redirect GUI regressions additionally need OpenSSL and Tesseract:
 ```sh
 xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
 xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/reputation.py
-# Offline regression for a lookup finishing after the selected peer changes:
+# Offline regressions for cancellation and late lookup results:
+xvfb-run -a cargo test slow_discovery_does_not_block_cancellation -- --ignored --test-threads=1
+xvfb-run -a cargo test busy_dismissal_and_browser_icon_style -- --ignored --test-threads=1
+xvfb-run -a cargo test discovery_failure_keeps_copy_qr_and_inspect -- --ignored --test-threads=1
 xvfb-run -a cargo test peer_change_discards_a_late_online_lookup -- --ignored --test-threads=1
+```
+
+Check scrollbar geometry with GTK warnings treated as failures (install the
+Breeze GTK theme to cover Plasma's theme too):
+
+```sh
+GTK_THEME=Breeze G_DEBUG=fatal-warnings GTK_A11Y=none GDK_BACKEND=x11 GSK_RENDERER=cairo \
+  xvfb-run -a cargo test scrollbars_have_valid_geometry -- --ignored --test-threads=1
+# Repeat with GTK_THEME=Adwaita.
 ```
 
 The domain-list parser, binary-cache decoder and suffix matcher have a standalone

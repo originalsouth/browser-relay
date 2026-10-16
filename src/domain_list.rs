@@ -1,5 +1,6 @@
 //! Compact, bounded domain indexes shared by the app, benchmarks and fuzz target.
 //! No network or filesystem access. Cache offsets are validated before indexing.
+use std::io::Read;
 const MAGIC: &[u8; 8] = b"BR-OISD\x01";
 pub const MAX_LIST: usize = 32 * 1024 * 1024;
 pub const MAX_CACHE: usize = 2 * (MAX_LIST + 4_000_004 + 332) + 16;
@@ -78,6 +79,9 @@ impl List {
     pub fn len(&self) -> usize {
         self.offsets.len() - 1
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn storage_bytes(&self) -> usize {
         self.data.len() + 4 * self.offsets.len() + self.modified.len()
     }
@@ -118,28 +122,19 @@ impl List {
         }
         out.extend_from_slice(self.data.as_bytes());
     }
-    fn decode(input: &mut Cursor<'_>) -> Result<Self> {
+    fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Self> {
         let date_len = input.u32()? as usize;
         let count = input.u32()? as usize;
         let data_len = input.u32()? as usize;
         if date_len > 320 || count == 0 || count > MAX_DOMAINS || data_len > MAX_LIST {
             return Err("Invalid domain index lengths.".into());
         }
-        let modified = std::str::from_utf8(input.take(date_len)?)
-            .map_err(|_| "Invalid cache date.")?
-            .to_string();
+        let modified = input.string(date_len)?;
         if modified.chars().any(char::is_control) {
             return Err("Invalid cache date.".into());
         }
-        let raw_offsets = input.take((count + 1) * 4)?;
-        let data =
-            std::str::from_utf8(input.take(data_len)?).map_err(|_| "Invalid cache domain text.")?;
-        let offsets: Vec<_> = raw_offsets
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| u32::from_le_bytes(*bytes))
-            .collect();
+        let offsets = input.u32s(count + 1)?;
+        let data = input.string(data_len)?;
         if offsets[0] != 0 || offsets[count] as usize != data_len {
             return Err("Invalid cache offsets.".into());
         }
@@ -158,23 +153,64 @@ impl List {
         }
         Ok(Self {
             modified,
-            data: data.to_string(),
+            data,
             offsets,
         })
     }
 }
-struct Cursor<'a>(&'a [u8]);
-impl<'a> Cursor<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8]> {
-        if count > self.0.len() {
-            return Err("Truncated domain index cache.".into());
+
+// Decode straight into final storage. The budget covers every heap buffer,
+// including temporary rank validation, before allocation. No raw-file copy.
+struct Decoder<R: Read> {
+    reader: std::io::Take<R>,
+    remaining: usize,
+}
+impl<R: Read> Decoder<R> {
+    fn new(reader: R, size_limit: usize, memory_budget: usize) -> Self {
+        Self {
+            reader: reader.take(size_limit as u64 + 1),
+            remaining: memory_budget,
         }
-        let (value, rest) = self.0.split_at(count);
-        self.0 = rest;
-        Ok(value)
+    }
+    fn reserve(&mut self, size: usize) -> Result<()> {
+        self.remaining = self
+            .remaining
+            .checked_sub(size)
+            .ok_or("Index exceeds the lookup memory budget.")?;
+        Ok(())
+    }
+    fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let mut bytes = [0; N];
+        self.reader
+            .read_exact(&mut bytes)
+            .map_err(|_| "Truncated domain index cache.")?;
+        Ok(bytes)
     }
     fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+        Ok(u32::from_le_bytes(self.array()?))
+    }
+    fn string(&mut self, size: usize) -> Result<String> {
+        self.reserve(size)?;
+        let mut bytes = vec![0; size];
+        self.reader
+            .read_exact(&mut bytes)
+            .map_err(|_| "Truncated domain index cache.")?;
+        String::from_utf8(bytes).map_err(|_| "Invalid cache text.".into())
+    }
+    fn u32s(&mut self, count: usize) -> Result<Vec<u32>> {
+        self.reserve(count.checked_mul(4).ok_or("Invalid index length.")?)?;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.u32()?);
+        }
+        Ok(values)
+    }
+    fn finish(&mut self) -> Result<()> {
+        let mut byte = [0];
+        match self.reader.read_exact(&mut byte) {
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
+            _ => Err("Unexpected trailing cache data or read error.".into()),
+        }
     }
 }
 pub struct Snapshot {
@@ -192,19 +228,27 @@ impl Snapshot {
         out
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > MAX_CACHE {
+        Self::read_sized(bytes, bytes.len())
+    }
+    /// File size bounds decoded storage. The decoder also caps the stream in
+    /// case the file grows after its metadata was read.
+    pub fn read_sized(reader: impl Read, size: usize) -> Result<Self> {
+        if size > MAX_CACHE {
             return Err("OISD cache exceeds size limit.".into());
         }
-        let mut input = Cursor(bytes);
-        if input.take(8)? != MAGIC {
+        Self::read_bounded(reader, size)
+    }
+    /// Stream from a bounded source into final storage; callers budget their
+    /// own reader buffer separately. Returned indexes own no raw-file copy.
+    pub fn read_bounded(reader: impl Read, memory_budget: usize) -> Result<Self> {
+        let mut input = Decoder::new(reader, MAX_CACHE, memory_budget);
+        if &input.array::<8>()? != MAGIC {
             return Err("Unknown OISD cache format; update the lists.".into());
         }
-        let downloaded = u64::from_le_bytes(input.take(8)?.try_into().unwrap());
+        let downloaded = u64::from_le_bytes(input.array()?);
         let big = List::decode(&mut input)?;
         let nsfw = List::decode(&mut input)?;
-        if !input.0.is_empty() {
-            return Err("Unexpected trailing cache data.".into());
-        }
+        input.finish()?;
         Ok(Self {
             big,
             nsfw,
@@ -349,41 +393,40 @@ impl Rankings {
         out
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > MAX_RANK_CACHE {
+        Self::read_sized(bytes, bytes.len())
+    }
+    pub fn read_sized(reader: impl Read, size: usize) -> Result<Self> {
+        if size > MAX_RANK_CACHE {
             return Err("Tranco cache exceeds its size limit.".into());
         }
-        let mut input = Cursor(bytes);
-        if input.take(8)? != RANK_MAGIC {
+        // Rank uniqueness validation needs at most one byte per source entry.
+        Self::read_bounded(reader, size + MAX_DOMAINS)
+    }
+    pub fn read_bounded(reader: impl Read, memory_budget: usize) -> Result<Self> {
+        let mut input = Decoder::new(reader, MAX_RANK_CACHE, memory_budget);
+        if &input.array::<8>()? != RANK_MAGIC {
             return Err("Unknown Tranco cache format.".into());
         }
         let source_entries = input.u32()?;
         if source_entries == 0 || source_entries as usize > MAX_DOMAINS {
             return Err("Invalid Tranco source size.".into());
         }
-        let downloaded = u64::from_le_bytes(input.take(8)?.try_into().unwrap());
+        let downloaded = u64::from_le_bytes(input.array()?);
         let id_len = input.u32()? as usize;
         if id_len == 0 || id_len > 32 {
             return Err("Invalid Tranco list ID.".into());
         }
-        let id = input.take(id_len)?;
-        if !id.iter().all(u8::is_ascii_alphanumeric) {
+        let list_id = input.string(id_len)?;
+        if !list_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return Err("Invalid Tranco list ID.".into());
         }
-        let list_id = std::str::from_utf8(id).unwrap().to_string();
         let domains = List::decode(&mut input)?;
-        let ranks: Vec<_> = input
-            .take(domains.len() * 4)?
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| u32::from_le_bytes(*bytes))
-            .collect();
-        if !input.0.is_empty() {
-            return Err("Unexpected trailing Tranco cache data.".into());
-        }
+        let ranks = input.u32s(domains.len())?;
+        input.finish()?;
         if ranks.len() > source_entries as usize {
             return Err("Invalid Tranco entry count.".into());
         }
+        input.reserve(source_entries as usize)?;
         let mut seen = vec![false; source_entries as usize];
         for (index, &rank) in ranks.iter().enumerate() {
             if rank == 0
@@ -472,5 +515,62 @@ mod rank_tests {
         let mut extra = bytes;
         extra.push(0);
         assert!(Rankings::decode(&extra).is_err());
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    struct ShortReads<'a>(&'a [u8]);
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let len = output.len().min(3);
+            self.0.read(&mut output[..len])
+        }
+    }
+    #[test]
+    fn streaming_decode_accounts_for_final_storage_and_validation_scratch() {
+        let snapshot = Snapshot {
+            big: List::parse("||example.org^").unwrap(),
+            nsfw: List::parse("||xxx^").unwrap(),
+            downloaded: 1,
+        };
+        let bytes = snapshot.encode();
+        let memory = snapshot.big.storage_bytes() + snapshot.nsfw.storage_bytes();
+        assert_eq!(
+            Snapshot::read_bounded(ShortReads(&bytes), memory)
+                .unwrap()
+                .encode(),
+            bytes
+        );
+        assert!(Snapshot::read_bounded(ShortReads(&bytes), memory - 1).is_err());
+        let ranks = Rankings::parse(
+            "1,example.org\n2,example.net",
+            "TEST",
+            "2026-10-15T00:00:00Z",
+            1,
+        )
+        .unwrap();
+        let bytes = ranks.encode();
+        let memory = ranks.storage_bytes() + ranks.source_entries as usize;
+        assert_eq!(
+            Rankings::read_bounded(ShortReads(&bytes), memory)
+                .unwrap()
+                .encode(),
+            bytes
+        );
+        assert!(Rankings::read_bounded(ShortReads(&bytes), memory - 1).is_err());
+        for cut in 0..bytes.len() {
+            assert!(Rankings::read_bounded(ShortReads(&bytes[..cut]), memory).is_err());
+        }
+        // Forged lengths are rejected on budget before allocating their storage.
+        let mut forged = snapshot.encode();
+        forged[20..24].copy_from_slice(&1_000_000u32.to_le_bytes());
+        assert!(
+            Snapshot::read_bounded(ShortReads(&forged), 1024)
+                .err()
+                .unwrap()
+                .contains("memory budget")
+        );
     }
 }

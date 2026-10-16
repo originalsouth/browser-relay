@@ -3,6 +3,8 @@ use crate::Result;
 use hickory_resolver::{TokioResolver, config::LookupIpStrategy};
 use reqwest::{Client, redirect::Policy};
 use serde_json::Value;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::{
     collections::HashSet,
     future::Future,
@@ -10,109 +12,19 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::Ordering,
         mpsc::{Receiver, Sender},
     },
     time::{Duration, Instant},
 };
 use url::Url;
 
-pub type Cancel = Arc<AtomicBool>;
-#[derive(Clone)]
-pub struct Location {
-    pub name: String,
-    pub country_code: String,
-    pub detail: String,
-}
-
-#[derive(Debug)]
-pub struct CertificateInfo {
-    pub subject: String,
-    pub issuer: String,
-    pub detail: String,
-}
-
-fn certificate_info(der: &[u8]) -> Result<CertificateInfo> {
-    use x509_parser::{extensions::GeneralName, x509::X509Name};
-    let clean = |value: &str| {
-        value
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect::<String>()
-    };
-    let (_, cert) = x509_parser::parse_x509_certificate(der)
-        .map_err(|_| "Could not read certificate identity fields.")?;
-    let display_name = |name: &X509Name<'_>| {
-        let org = name
-            .iter_organization()
-            .filter_map(|value| value.as_str().ok())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let cn = name
-            .iter_common_name()
-            .filter_map(|value| value.as_str().ok())
-            .collect::<Vec<_>>()
-            .join(", ");
-        match (org.is_empty(), cn.is_empty()) {
-            (false, false) if org != cn => format!("{org} · {cn}"),
-            (false, _) => org,
-            (_, false) => cn,
-            _ => name.to_string(),
-        }
-    };
-    let names = cert
-        .subject_alternative_name()
-        .ok()
-        .flatten()
-        .map(|extension| {
-            extension
-                .value
-                .general_names
-                .iter()
-                .filter_map(|name| {
-                    if let GeneralName::DNSName(name) = name {
-                        Some(*name)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    let mut subject = display_name(cert.subject());
-    if subject.is_empty() {
-        subject = if names.is_empty() {
-            "Not stated".into()
-        } else {
-            names.clone()
-        };
-    }
-    let subject = clean(&subject);
-    let issuer = clean(&display_name(cert.issuer()));
-    let issuer = if issuer.is_empty() {
-        "Not stated".into()
-    } else {
-        issuer
-    };
-    let detail = format!(
-        "Issued to: {subject}\nSigned by: {issuer}\nSubject: {}\nIssuer: {}\nDNS names: {}\nValid from: {}\nValid until: {}\nIdentity fields come from the connected server's certificate. A domain certificate does not establish the owner's legal identity or site trust.",
-        clean(&cert.subject().to_string()),
-        clean(&cert.issuer().to_string()),
-        if names.is_empty() {
-            "Not stated"
-        } else {
-            &names
-        },
-        cert.validity().not_before,
-        cert.validity().not_after
-    );
-    Ok(CertificateInfo {
-        subject,
-        issuer,
-        detail,
-    })
-}
+pub use browser_relay::Cancel;
+pub use browser_relay::certificate::{CertificateInfo, certificate_info};
+pub use browser_relay::geo::Location;
+#[cfg(test)]
+use browser_relay::route::next_redirect;
+use browser_relay::route::{Next, ResponseError, Route};
 
 pub const PROBE_COUNT: usize = 8;
 
@@ -141,103 +53,8 @@ pub enum Event {
     Insights(crate::reputation::Report, Vec<String>),
     Done,
 }
-const MAX_HOPS: usize = 6;
 
-pub fn target(link: &str) -> Result<Url> {
-    let mut url = Url::parse(link).map_err(|_| "Enter a complete HTTP or HTTPS URL.")?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("Only HTTP and HTTPS links can be inspected.".into());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("Links containing a username or password are not inspected. Remove the credentials first.".into());
-    }
-    let name = host(&url);
-    if name.starts_with(['-', '+', '@'])
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || ".-:".contains(c))
-    {
-        return Err("The hostname contains unsupported characters.".into());
-    }
-    url.set_fragment(None);
-    Ok(url)
-}
-
-pub fn host(url: &Url) -> String {
-    url.host_str()
-        .unwrap_or_default()
-        .trim_matches(['[', ']'])
-        .to_string()
-}
-
-// Conservative exclusion of non-public/special-purpose networks. Mapped IPv6
-// must not bypass the IPv4 checks. This gates disclosure, not a trust verdict.
-pub fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !ip.is_private()
-                && !ip.is_loopback()
-                && !ip.is_link_local()
-                && !ip.is_documentation()
-                && a != 0
-                && a < 224
-                && !(a == 100 && (64..128).contains(&b))
-                && !(a == 192 && (b == 0 || (b == 88 && c == 99)))
-                && !(a == 198 && (b == 18 || b == 19))
-        }
-        IpAddr::V6(ip) => {
-            if let Some(ip) = ip.to_ipv4_mapped() {
-                return public_ip(IpAddr::V4(ip));
-            }
-            let s = ip.segments();
-            s[0] & 0xe000 == 0x2000
-                && !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
-                && s[0] != 0x2002
-                && !(s[0] == 0x3fff && s[1] < 0x1000)
-        }
-    }
-}
-
-pub(crate) fn public_name(name: &str) -> bool {
-    let name = name.trim_end_matches('.').to_ascii_lowercase();
-    name.len() <= 253
-        && name.contains('.')
-        && name.split('.').all(|label| {
-            !label.is_empty() && label.len() <= 63
-                && !label.starts_with('-') && !label.ends_with('-')
-                && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        })
-        // The PSL recognizes punycode TLDs as well as ASCII ones. Unknown
-        // namespaces stay private; a dotted name alone is not a public domain.
-        && psl::suffix(name.as_bytes()).is_some_and(|suffix| suffix.is_known())
-        && ![
-            "local",
-            "localhost",
-            "internal",
-            "lan",
-            "corp",
-            "home",
-            "test",
-            "invalid",
-            "example",
-            "onion",
-            "arpa",
-        ]
-        .iter()
-        .any(|suffix| name.ends_with(&format!(".{suffix}")))
-}
-
-pub fn reputation_url(name: &str) -> Result<String> {
-    if let Ok(ip) = name.parse::<IpAddr>() {
-        if public_ip(ip) {
-            return Ok(format!("https://www.virustotal.com/gui/ip-address/{ip}"));
-        }
-    } else if public_name(name) {
-        return Ok(format!("https://www.virustotal.com/gui/domain/{name}"));
-    }
-    Err("Online lookups are disabled for local or reserved destinations.".into())
-}
+pub use browser_relay::link::{host, public_ip, public_name, reputation_url, target};
 
 // Use the same current Rust resolver for HTTP and direct DNS checks. Reqwest's
 // optional built-in adapter still pins an older Hickory release.
@@ -371,17 +188,6 @@ pub(crate) async fn addresses(name: &str) -> Result<Vec<IpAddr>> {
     }
 }
 
-fn next_redirect(current: &Url, location: &str) -> Result<Url> {
-    let next = current
-        .join(location)
-        .map_err(|_| "Invalid redirect URL.")?;
-    let next = target(next.as_str())?;
-    if current.scheme() == "https" && next.scheme() == "http" {
-        return Err("HTTPS redirects to unencrypted HTTP. The downgrade was not followed.".into());
-    }
-    Ok(next)
-}
-
 pub(crate) fn proxy_configured() -> bool {
     [
         "http_proxy",
@@ -396,7 +202,7 @@ pub(crate) fn proxy_configured() -> bool {
 }
 
 async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<()>>) -> Result<()> {
-    let mut url = target(link)?;
+    let mut route = Route::new(link)?;
     let proxied = proxy_configured();
     if proxied {
         section(
@@ -405,22 +211,21 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
             "HTTP honors proxy and NO_PROXY settings. Separate DNS and ping checks are skipped so they cannot bypass your proxy. Peer IP and GeoIP may describe the proxy. Hostname-based online lookups are unavailable in this mode.",
         );
     }
-    let mut visited = HashSet::new();
-    let mut names = Vec::new();
     let mut peers = HashSet::new();
-    let mut encrypted = true;
-    let mut complete = false;
-    for index in 0..MAX_HOPS {
-        if !visited.insert(url.to_string()) {
-            section(sender, "Check stopped", "Redirect loop detected.");
-            break;
-        }
+    loop {
+        let previous_hosts = route.names.len();
+        let url = match route.begin_request() {
+            Ok(url) => url,
+            Err(error) => {
+                section(sender, "Check stopped", error);
+                break;
+            }
+        };
         let name = host(&url);
-        if names.last() != Some(&name) {
-            names.push(name.clone());
-            let report = crate::reputation::check(&names);
+        if route.names.len() != previous_hosts {
+            let report = crate::reputation::check(&route.names);
             section(sender, "Local domain insights", report.detail());
-            let _ = sender.send(Event::Insights(report, names.clone()));
+            let _ = sender.send(Event::Insights(report, route.names.clone()));
         }
         let ips = if proxied {
             Vec::new()
@@ -444,7 +249,7 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                     .join("\n"),
             );
         }
-        if index == 0
+        if route.requests == 1
             && !proxied
             && ips.iter().all(|ip| public_ip(*ip))
             && (public_name(&name) || name.parse::<IpAddr>().is_ok())
@@ -484,7 +289,6 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
             }
         };
         let secure = url.scheme() == "https";
-        encrypted &= secure;
         let status = response.status();
         let peer = response.remote_addr().map(|addr| addr.ip());
         if let Some(ip) = peer {
@@ -527,7 +331,7 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
         };
         section(
             sender,
-            &format!("Connection {} · {name}", index + 1),
+            &format!("Connection {} · {name}", route.requests),
             format!(
                 "{tls}\nHTTP {} · {} ms · peer {}\n{url}",
                 status.as_u16(),
@@ -536,29 +340,25 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                     .unwrap_or("unavailable".into())
             ),
         );
-        if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
-            let next = response
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|h| h.to_str().ok())
-                .ok_or_else(|| "Redirect has no readable Location header.".to_string())
-                .and_then(|location| next_redirect(&url, location));
-            let next = match next {
-                Ok(next) => next,
-                Err(e) => {
-                    section(sender, "Redirect stopped", e);
-                    break;
-                }
-            };
-            if index + 1 == MAX_HOPS {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|h| h.to_str().ok());
+        match route.response(status.as_u16(), location) {
+            Err(error) => {
                 section(
                     sender,
-                    "Check stopped",
-                    "Redirect limit reached: at most six requests across the entire inspection.",
+                    match &error {
+                        ResponseError::Redirect(_) => "Redirect stopped",
+                        ResponseError::UnexpectedResponse => "Inspection stopped",
+                    },
+                    error.to_string(),
                 );
                 break;
             }
-            if next.origin() != url.origin() {
+            Ok(Next::Done) => break,
+            Ok(Next::Request) => {}
+            Ok(Next::Consent(next)) => {
                 section(
                     sender,
                     "Redirect to another origin",
@@ -567,7 +367,7 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                     ),
                 );
                 let _ = sender.send(Event::Assessment {
-                    encrypted,
+                    encrypted: route.encrypted,
                     complete: false,
                 });
                 let _ = sender.send(Event::Redirect(next.to_string()));
@@ -577,26 +377,23 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                         Ok(()) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(()),
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            tokio::time::sleep(Duration::from_millis(40)).await;
+                            tokio::time::sleep(Duration::from_millis(40)).await
                         }
                     }
                 }
+                route.allow_redirect()?;
                 let _ = sender.send(Event::Resumed);
             }
-            url = next;
-        } else {
-            complete = true;
-            break;
         }
     }
     let _ = sender.send(Event::Assessment {
-        encrypted,
-        complete,
+        encrypted: route.encrypted,
+        complete: route.complete,
     });
     section(
         sender,
         "Connection assessment",
-        if encrypted && complete {
+        if route.encrypted && route.complete {
             "All observed connections used verified HTTPS. Site trust is unknown; encryption does not establish that the content is safe."
         } else {
             "The route was incomplete (at most six requests) or included unencrypted HTTP. Site trust is unknown."
@@ -702,46 +499,7 @@ fn geo_path() -> Result<PathBuf> {
 }
 
 fn local_geo(ip: IpAddr) -> Result<Location> {
-    let path = geo_path()?;
-    let reader = maxminddb::Reader::open_readfile(&path)
-        .map_err(|e| format!("Could not read local GeoIP database: {e}"))?;
-    let value: Value = reader
-        .lookup(ip)
-        .map_err(|e| e.to_string())?
-        .decode()
-        .map_err(|e| e.to_string())?
-        .ok_or("The local GeoIP database has no entry for this IP.")?;
-    let city = value["city"]["names"]["en"].as_str();
-    let country = value["country"]["names"]["en"]
-        .as_str()
-        .or(value["country"]["iso_code"].as_str());
-    let location = [city, country]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let detail = format!(
-        "{}\nDatabase: {} · built {}\nApproximate IP location; may identify a CDN/proxy, not the origin server. DB-IP Lite data, when installed: db-ip.com · CC BY 4.0.",
-        if location.is_empty() {
-            "Location unavailable"
-        } else {
-            &location
-        },
-        path.display(),
-        gtk::glib::DateTime::from_unix_utc(reader.metadata().build_epoch as i64)
-            .and_then(|date| date.format("%Y-%m-%d"))
-            .map(|date| date.to_string())
-            .unwrap_or_else(|_| "unknown".into())
-    );
-    Ok(Location {
-        name: if location.is_empty() {
-            "Location unavailable".into()
-        } else {
-            location
-        },
-        country_code: value["country"]["iso_code"].as_str().unwrap_or("").into(),
-        detail,
-    })
+    browser_relay::geo::lookup(&geo_path()?, ip)
 }
 
 async fn json_get(url: Url) -> Result<Value> {
@@ -749,7 +507,7 @@ async fn json_get(url: Url) -> Result<Value> {
         .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client
+    let response = client
         .get(url)
         .send()
         .await
@@ -760,17 +518,7 @@ async fn json_get(url: Url) -> Result<Value> {
             response.status()
         ));
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| e.without_url().to_string())?
-    {
-        if bytes.len() + chunk.len() > 65536 {
-            return Err("Service response exceeded 64 KiB.".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+    let bytes = crate::http::body(response, 65536, "Service response exceeded 64 KiB.").await?;
     serde_json::from_slice(&bytes)
         .map_err(|_| "The service returned an unreadable response.".into())
 }
@@ -967,6 +715,68 @@ mod tests {
             requests
         });
         (url, thread)
+    }
+
+    #[test]
+    fn interim_only_responses_do_not_complete_but_a_following_final_response_does() {
+        for (reply, complete) in [
+            (
+                "HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n",
+                false,
+            ),
+            ("HTTP/1.1 103 Early Hints\r\n\r\n", false),
+            (
+                "HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                true,
+            ),
+        ] {
+            let (url, server) = server(reply, 1);
+            let (sender, receiver) = mpsc::channel();
+            run(&url, &sender, &Arc::new(AtomicBool::new(false)));
+            let events: Vec<_> = receiver.try_iter().collect();
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::Assessment { complete: true, .. })),
+                complete
+            );
+            assert!(events.iter().any(|e| matches!(
+                e,
+                Event::Assessment {
+                    encrypted: false,
+                    ..
+                }
+            )));
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::Section(title, _) if title == "Redirect stopped"))
+            );
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn nonstandard_http_status_completes_the_inspected_route() {
+        let (url, server) = server(
+            "HTTP/1.1 999 Blocked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            1,
+        );
+        let (sender, receiver) = mpsc::channel();
+        run(&url, &sender, &Arc::new(AtomicBool::new(false)));
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Connection { status: 999, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Assessment { complete: true, .. }))
+        );
+        assert!(!events.iter().any(|e| matches!(e, Event::Redirect(_))));
+        assert_eq!(server.join().unwrap().len(), 1);
     }
 
     #[test]

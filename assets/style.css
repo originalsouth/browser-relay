@@ -59,8 +59,9 @@ window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
 .relay .list-badge { background: #211e2b; border: 1px solid #3c344a; border-radius: 7px; padding: 5px 9px; }
 .relay .list-kind { color: #aaa1ba; font-size: 11px; }
 .relay .list-state { font-size: 11px; font-weight: 650; }
-.relay .list-neutral { color: #d5c8ec; }
-.relay .list-match { color: #ffc27d; }
+.relay .list-neutral { color: #8cdda5; }
+.relay .list-match { color: #ff8995; }
+.relay .list-adult { color: #ffc27d; }
 .relay .list-unknown { color: #aaa1ba; }
 .relay .list-refresh > button { background: transparent; color: #baa4de; border: 1px solid transparent; border-radius: 7px; padding: 5px; min-height: 20px; min-width: 20px; box-shadow: none; }
 .relay .list-refresh > button:hover { background: #393047; border-color: #625077; color: #eadcff; }
@@ -70,8 +71,16 @@ window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
 .relay .insight-tile.popularity-tile { background: linear-gradient(120deg, #342942, #272333); border-color: #65507f; }
 .relay .insight-tile .list-kind { font-size: 9px; font-weight: 650; letter-spacing: .6px; color: #b7a9c9; }
 .relay .insight-tile .list-state { font-size: 20px; font-weight: 700; color: #decbff; letter-spacing: -.5px; }
-.relay .insight-tile .list-state.list-match { color: #ffc27d; }
+.relay .insight-tile .list-state.list-match { color: #ff8995; }
+.relay .insight-tile .list-state.list-adult { color: #ffc27d; }
+.relay .insight-tile .list-state.list-neutral { color: #8cdda5; }
 .relay .insight-tile .list-state.list-unknown { color: #aaa1ba; }
 .relay .insight-action > button { padding: 3px 8px; min-height: 20px; font-size: 11px; border-radius: 7px; }
 
 .relay .domain-insights .list-refresh > button { padding: 1px; min-height: 16px; }
+
+/* Breeze's negative slider margins can produce a -2px minimum in GTK 4.
+   Keep the geometry local to the relay, including its inspection popovers. */
+.relay scrollbar slider { min-width: 6px; min-height: 6px; margin: 0; padding: 0; border: none; }
+.relay scrollbar.vertical slider { min-height: 30px; }
+.relay scrollbar.horizontal slider { min-width: 30px; }

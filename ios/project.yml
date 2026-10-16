@@ -1,0 +1,90 @@
+name: BrowserRelay
+options:
+  minimumXcodeGenVersion: 2.42.0
+  deploymentTarget:
+    iOS: '17.0'
+configs:
+  Debug: debug
+  Release: release
+  DefaultBrowser: release
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.2.0
+    CODE_SIGN_STYLE: Automatic
+    RELAY_APP_GROUP: group.io.github.originalsouth.browser-relay
+    SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Shared/RelayCore.h
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    OTHER_LDFLAGS: ['$(inherited)', '-liconv']
+targets:
+  BrowserRelay:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes: ['*.plist', '*.entitlements']
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.originalsouth.browser-relay
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/BrowserRelay.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        DefaultBrowser:
+          INFOPLIST_FILE: App/Info-DefaultBrowser.plist
+          CODE_SIGN_ENTITLEMENTS: App/DefaultBrowser.entitlements
+    dependencies:
+      - framework: build/RelayCore.xcframework
+        embed: false
+      - target: BrowserRelayShare
+        embed: true
+  BrowserRelayShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Share
+        excludes: ['*.plist', '*.entitlements']
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.originalsouth.browser-relay.share
+        INFOPLIST_FILE: Share/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Share/Share.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+    dependencies:
+      - framework: build/RelayCore.xcframework
+        embed: false
+  BrowserRelayTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.originalsouth.browser-relay.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: BrowserRelay
+schemes:
+  BrowserRelay:
+    build:
+      targets:
+        BrowserRelay: all
+        BrowserRelayTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [BrowserRelayTests]
+    archive:
+      config: Release
+  BrowserRelayDefault:
+    build:
+      targets:
+        BrowserRelay: all
+    run:
+      config: DefaultBrowser
+    archive:
+      config: DefaultBrowser

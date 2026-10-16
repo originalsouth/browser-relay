@@ -1,1 +1,5 @@
 /target/
+/ios/build/
+/ios/*.xcodeproj/
+/ios/*.xcworkspace/
+.DS_Store

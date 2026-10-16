@@ -1,9 +1,11 @@
 mod blocklist;
-mod domain_list;
+mod browser;
+use browser_relay::domain_list;
+mod http;
 mod inspect;
 mod inspector_ui;
 mod list_cache;
-mod qr;
+use browser_relay::qr;
 mod relay;
 mod reputation;
 mod tranco;
@@ -36,20 +38,45 @@ Options:
   --version   Show the version
 
 Requires GTK 4 for the dialog; wl-copy (Wayland) or xclip/xsel (X11)
-for clipboard support. Browser executables are discovered on PATH.
+for clipboard support. Browsers are discovered from desktop registrations,
+with a PATH fallback for Chromium and Firefox.
 Run ./install.sh to register this app as your default browser.
 ";
 
 type Result<T> = std::result::Result<T, String>;
 
-fn action(value: &str) -> Result<Action> {
-    match value.trim() {
-        "1" | "Chromium" => Ok(Action::Chromium),
-        "2" | "Firefox" => Ok(Action::Firefox),
-        "3" | "Copy to clipboard" => Ok(Action::Copy),
-        "" | "q" | "Q" => Ok(Action::Cancel),
-        _ => Err("Choose 1, 2, 3, or q.".into()),
+fn action(value: &str, browsers: &[browser::Browser]) -> Result<Action> {
+    let value = value.trim();
+    if matches!(value, "" | "q" | "Q") {
+        return Ok(Action::Cancel);
     }
+    if matches!(value, "c" | "C" | "Copy to clipboard") {
+        return Ok(Action::Copy);
+    }
+    if let Ok(index) = value.parse::<usize>() {
+        if index == browsers.len() + 1 {
+            return Ok(Action::Copy);
+        }
+        if let Some(browser) = index.checked_sub(1).and_then(|i| browsers.get(i)) {
+            return Ok(Action::Browser(browser.clone()));
+        }
+    }
+    let mut matches = browsers.iter().filter(|b| {
+        b.name == value || terminal_text(&b.name) == value || format!("{:?}", b.name) == value
+    });
+    if let Some(browser) = matches.next()
+        && matches.next().is_none()
+    {
+        return Ok(Action::Browser(browser.clone()));
+    }
+    Err(format!(
+        "Choose 1–{}, c to copy, or q to cancel.",
+        browsers.len() + 1
+    ))
+}
+
+fn terminal_text(value: &str) -> String {
+    browser_relay::display_text::escaped(value)
 }
 
 fn escape_markup(value: &str) -> String {
@@ -60,22 +87,29 @@ fn escape_markup(value: &str) -> String {
 }
 
 fn choose(urls: &[String], terminal: bool) -> Result<Action> {
+    if terminal && !io::stdin().is_terminal() {
+        return Err("--terminal needs an interactive terminal.".into());
+    }
+    let browsers = browser::discover();
     if terminal {
-        if !io::stdin().is_terminal() {
-            return Err("--terminal needs an interactive terminal.".into());
-        }
         // Debug formatting keeps control characters in input from affecting the terminal.
         for url in urls {
             eprintln!("{url:?}");
         }
         loop {
-            eprint!("1) Chromium  2) Firefox  3) Copy to clipboard  q) Cancel\nChoice: ");
+            for (i, browser) in browsers.iter().enumerate() {
+                eprintln!("{}) {}", i + 1, terminal_text(&browser.name));
+            }
+            eprint!(
+                "{}) Copy to clipboard (c)  q) Cancel\nChoice: ",
+                browsers.len() + 1
+            );
             io::stderr().flush().map_err(|e| e.to_string())?;
             let mut input = String::new();
             io::stdin()
                 .read_line(&mut input)
                 .map_err(|e| e.to_string())?;
-            match action(&input) {
+            match action(&input, &browsers) {
                 Ok(choice) => return Ok(choice),
                 Err(error) => eprintln!("{error}"),
             }
@@ -104,13 +138,23 @@ fn choose(urls: &[String], terminal: bool) -> Result<Action> {
             "--title=Browser Relay",
             "--width=640",
             "--height=320",
+            "--column=ID",
             "--column=Open with",
+            "--hide-column=1",
+            "--print-column=1",
             "--hide-header",
             "--ok-label=Choose",
             "--cancel-label=Cancel",
         ])
         .arg(format!("--text={preview}{suffix}"))
-        .args(["Chromium", "Firefox", "Copy to clipboard"])
+        .arg("--")
+        .args(
+            browsers
+                .iter()
+                .enumerate()
+                .flat_map(|(i, b)| [(i + 1).to_string(), b.name.clone()]),
+        )
+        .args([(browsers.len() + 1).to_string(), "Copy to clipboard".into()])
         .output()
         .map_err(|e| format!("Could not start the chooser: {e}"))?;
     if output.status.code() == Some(1) {
@@ -122,7 +166,7 @@ fn choose(urls: &[String], terminal: bool) -> Result<Action> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    action(&String::from_utf8_lossy(&output.stdout))
+    action(&String::from_utf8_lossy(&output.stdout), &browsers)
 }
 
 fn run() -> Result<()> {
@@ -205,6 +249,12 @@ fn validate_link(link: &str) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    // SAFETY: first operation in the executable, before GTK/GIO or any workers
+    // are initialized. No other thread can be reading the process environment.
+    unsafe {
+        env::set_var("PATH", relay::safe_path(env::var_os("PATH").as_deref()));
+    }
+
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -232,12 +282,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_names_are_readable_without_control_sequences() {
+        assert_eq!(terminal_text("Firefox"), "Firefox");
+        assert_eq!(terminal_text("Work Browser"), "Work Browser");
+        let escaped = terminal_text("Bad\n\x1b[31m\u{202e}");
+        assert!(!escaped.chars().any(char::is_control));
+        assert!(!escaped.contains('\u{202e}'));
+    }
+
+    #[test]
     fn choices_and_cancel() {
-        assert_eq!(action("Chromium\n"), Ok(Action::Chromium));
-        assert_eq!(action("2\n"), Ok(Action::Firefox));
-        assert_eq!(action("Copy to clipboard\n"), Ok(Action::Copy));
-        assert_eq!(action(""), Ok(Action::Cancel));
-        assert!(action("unexpected").is_err());
+        assert_eq!(action("1\n", &[]), Ok(Action::Copy));
+        assert_eq!(action("Copy to clipboard\n", &[]), Ok(Action::Copy));
+        assert_eq!(action("c", &[]), Ok(Action::Copy));
+        assert_eq!(action("", &[]), Ok(Action::Cancel));
+        assert!(action("0", &[]).is_err());
+        assert!(action("2", &[]).is_err());
+        assert!(action("unexpected", &[]).is_err());
     }
 
     #[test]

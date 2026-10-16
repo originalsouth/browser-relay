@@ -2,22 +2,24 @@
 
 **Your link. Your call.**
 
-A small, native Linux app that gives every link a pit stop. Open it in Chromium
-or Firefox, copy it, send it to your phone with a QR code, or take a closer look
-before you visit. Written in Rust with GTK 4, dressed in dark violet.
+A small, native Linux app that gives every link a pit stop. Open it in your
+favourite browser, copy it, send it to your phone with a QR code, or take a closer
+look before you visit. Written in Rust with GTK 4, dressed in dark violet.
 
 [![Browser Relay](assets/preview.png)](https://github.com/originalsouth/browser-relay)
 
-## Five ways to go
+## Choose where it goes
 
-- **Chromium or Firefox** — pick the right browser for the moment.
+- **Your browsers** — automatically finds installed desktop browsers, from Firefox
+  and Chromium to Brave, Vivaldi and Flatpak installs.
 - **Copy link** — keep it for later, paste it somewhere else.
 - **Show QR code** — scan it on another device. Hidden until you ask.
 - **Inspect link** — see the connection behind the address.
 
-Click a choice or press **1–5**. **Esc** backs out. Works with `xdg-open` and apps
-that use your default browser, with an application-menu entry and a Plasma desktop
-shortcut too.
+Click a choice or press its number. **Ctrl+C** copies, **Ctrl+R** shows the QR code,
+**Ctrl+I** inspects. **Q/Esc** dismisses the chooser before you make a choice. Works
+with `xdg-open` and apps that use your default browser, with an application-menu
+entry and a Plasma desktop shortcut too.
 
 ## A peek before you click
 
@@ -59,4 +61,8 @@ browser-relay --update-lists
 GeoIP uses a local MMDB database. Point `BROWSER_RELAY_GEOIP_DB` at yours;
 [setup, data sources and developer notes](docs/reference.md) cover the rest.
 
-[MIT licensed](LICENSE). Made for Linux, and for people who use more than one browser.
+An **iOS companion is in development**, with native browsing, Share-menu inspection
+and the same Rust core. It still needs testing on a Mac and device.
+[Build notes and default-browser support →](docs/ios.md)
+
+[MIT licensed](LICENSE). For people who use more than one browser.

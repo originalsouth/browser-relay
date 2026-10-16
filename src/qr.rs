@@ -1,13 +1,13 @@
 use qrcode::{EcLevel, QrCode};
 
-pub(crate) const SIDE: i32 = 147;
-pub(crate) const QUIET_ZONE: usize = 4;
+pub const SIDE: i32 = 147;
+pub const QUIET_ZONE: usize = 4;
 // Version 6-M holds 106 bytes. Including its quiet zone, 49 modules fit at
 // three logical pixels per module in the compact preview.
-pub(crate) const MAX_BYTES: usize = 106;
+pub const MAX_BYTES: usize = 106;
 const MAX_MODULES: usize = 41;
 
-pub(crate) fn encode(link: &str) -> Option<QrCode> {
+pub fn encode(link: &str) -> Option<QrCode> {
     if link.is_empty() || link.len() > MAX_BYTES {
         return None;
     }

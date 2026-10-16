@@ -1,6 +1,6 @@
 use crate::{
     inspect::{self, Cancel, Event, Location, PROBE_COUNT},
-    relay::{Action, executable, execute},
+    relay::{Action, execute_gui},
 };
 use gtk::{gdk, glib, prelude::*};
 use std::{
@@ -207,10 +207,58 @@ fn online_lookup<F>(
     }
 }
 
+fn popularity_scale() -> (gtk::DrawingArea, Rc<Cell<Option<f64>>>) {
+    let scale = gtk::DrawingArea::builder()
+        .content_height(8)
+        .hexpand(true)
+        .build();
+    let position = Rc::new(Cell::new(None));
+    let current = position.clone();
+    scale.set_draw_func(move |_, cr, width, height| {
+        let position = current.get();
+        let width = f64::from(width);
+        let middle = f64::from(height) / 2.0;
+        let gradient = gtk::cairo::LinearGradient::new(3.0, 0.0, width - 3.0, 0.0);
+        for stop in [0.0, 0.5, 1.0] {
+            let [r, g, b] = browser_relay::insights::popularity_rgb(stop);
+            gradient.add_color_stop_rgb(
+                stop,
+                f64::from(r) / 255.0,
+                f64::from(g) / 255.0,
+                f64::from(b) / 255.0,
+            );
+        }
+        if position.is_some() {
+            let _ = cr.set_source(&gradient);
+        } else {
+            cr.set_source_rgb(0.5, 0.47, 0.55);
+        }
+        cr.rectangle(3.0, middle - 2.0, (width - 6.0).max(0.0), 4.0);
+        let _ = cr.fill();
+        if let Some(position) = position {
+            cr.arc(
+                3.0 + position * (width - 6.0).max(0.0),
+                middle,
+                3.0,
+                0.0,
+                std::f64::consts::TAU,
+            );
+            cr.set_source_rgb(0.1, 0.08, 0.15);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.set_line_width(1.0);
+            let _ = cr.stroke();
+        }
+    });
+    (scale, position)
+}
+
 #[derive(Clone)]
 struct InsightsView {
     rank: gtk::Label,
     rank_caption: gtk::Label,
+    rank_scale: gtk::DrawingArea,
+    rank_position: Rc<Cell<Option<f64>>>,
     big: gtk::Label,
     nsfw: gtk::Label,
     note: gtk::Label,
@@ -234,33 +282,54 @@ impl InsightsView {
             None if rank.available => "Unranked".into(),
             None => "Not loaded".into(),
         });
+        self.rank.set_attributes(None);
+        if rank.position.is_none() {
+            self.rank.add_css_class("list-unknown");
+        } else {
+            self.rank.remove_css_class("list-unknown");
+        }
+        if let Some(position) = rank.position {
+            let [r, g, b] = browser_relay::insights::popularity_rgb(position);
+            let attributes = gtk::pango::AttrList::new();
+            attributes.insert(gtk::pango::AttrColor::new_foreground(
+                u16::from(r) * 257,
+                u16::from(g) * 257,
+                u16::from(b) * 257,
+            ));
+            self.rank.set_attributes(Some(&attributes));
+        }
+        self.rank_position.set(rank.position);
+        self.rank_scale.queue_draw();
+        self.rank_scale.set_tooltip_text(Some(&match rank.position {
+            Some(position) => format!("Popularity: {position:.3} · 0 green = #1 · 1 red = #1,000,000 / outside index. Logarithmic rank with arctangent smoothing. Not a safety score."),
+            None => "Popularity unavailable or not applicable.".into(),
+        }));
         self.rank_caption.set_text(&rank.caption);
         self.rank.set_tooltip_text(Some(&rank.detail));
         self.rank_caption.set_tooltip_text(Some(&rank.detail));
         let report = &combined.oisd;
-        for (label, matched) in [(&self.big, report.big), (&self.nsfw, report.nsfw)] {
+        for (label, matched, adult) in [
+            (&self.big, report.big, false),
+            (&self.nsfw, report.nsfw, true),
+        ] {
             label.set_text(match matched {
+                Some(true) if adult => "Adult match",
                 Some(true) => "Listed",
                 Some(false) => "No match",
                 None => "Unknown",
             });
-            for class in ["list-match", "list-neutral", "list-unknown"] {
+            for class in ["list-match", "list-adult", "list-neutral", "list-unknown"] {
                 label.remove_css_class(class);
             }
             label.add_css_class(match matched {
+                Some(true) if adult => "list-adult",
                 Some(true) => "list-match",
                 Some(false) => "list-neutral",
                 None => "list-unknown",
             });
         }
-        self.note.set_text(if report.stale || rank.stale {
-            "Stale · update lists"
-        } else if report.big.is_none() || !rank.available {
-            "Some lists unavailable"
-        } else {
-            "Checked locally"
-        });
-        self.note.set_tooltip_text(None);
+        self.note.set_text(&report.note(rank));
+        self.note.set_tooltip_text(Some("Green means no match in the loaded lists, not a safety guarantee. Red is an OISD Big match; orange is an adult/shock-content match. Popularity is separate."));
         if let Some(row) = self.row.upgrade() {
             row.set_tooltip_text(Some(&combined.detail()));
         }
@@ -279,21 +348,24 @@ fn list_tile(title: &str, caption: &str) -> (gtk::Box, gtk::Label, gtk::Label) {
     (group, value, caption)
 }
 
-fn reputation(button: &gtk::MenuButton, name: &str, status: &gtk::Label) {
+fn reputation(
+    button: &gtk::MenuButton,
+    name: &str,
+    status: &gtk::Label,
+    browser: Option<crate::browser::Browser>,
+) {
     let Ok(url) = inspect::reputation_url(name) else {
         return;
-    };
-    let browser = if executable(&["chromium", "chromium-browser"]).is_some() {
-        Some(Action::Chromium)
-    } else if executable(&["firefox", "firefox-esr"]).is_some() {
-        Some(Action::Firefox)
-    } else {
-        None
     };
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.append(&text("VIRUSTOTAL REPORT", "eyebrow"));
     content.append(&wrapped(&format!("Shares {name} with VirusTotal in your browser. The original path and query are not sent. Your browser may share cookies, account identity and other request data. The report describes this initial host, not every redirect.")));
-    let confirm = gtk::Button::with_label("Open browser report ↗");
+    let confirm = gtk::Button::with_label(
+        &browser
+            .as_ref()
+            .map(|b| format!("Open in {} ↗", b.name))
+            .unwrap_or_else(|| "No browser available".into()),
+    );
     confirm.add_css_class("route");
     confirm.set_sensitive(browser.is_some());
     content.append(&confirm);
@@ -306,15 +378,20 @@ fn reputation(button: &gtk::MenuButton, name: &str, status: &gtk::Label) {
         if let Some(pop) = weak_pop.upgrade() {
             pop.popdown();
         }
-        if let Some(action) = browser {
-            let result = execute(action, std::slice::from_ref(&url));
-            if let Some(status) = status.upgrade() {
-                status.set_text(
-                    &result
-                        .map(|_| "Opened in browser".into())
-                        .unwrap_or_else(|e| e),
-                );
-            }
+        if let Some(browser) = &browser {
+            let browser = browser.clone();
+            let url = url.clone();
+            let status = status.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = execute_gui(Action::Browser(browser), vec![url]).await;
+                if let Some(status) = status.upgrade() {
+                    status.set_text(
+                        &result
+                            .map(|_| "Opened in browser".into())
+                            .unwrap_or_else(|e| e),
+                    );
+                }
+            });
         }
     });
 }
@@ -510,7 +587,12 @@ fn chart(peers: Rc<RefCell<Vec<Peer>>>, selected: Rc<Cell<usize>>) -> gtk::Drawi
     area
 }
 
-pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
+pub fn show(
+    parent: &gtk::Window,
+    link: &str,
+    multiple: bool,
+    browser: Option<crate::browser::Browser>,
+) {
     let popup = gtk::Window::builder()
         .title("Inspect link")
         .transient_for(parent)
@@ -652,7 +734,9 @@ pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
     let (rank_tile, rank_state, rank_caption) =
         list_tile("TRANCO · POPULARITY", "Includes subdomains");
     rank_tile.add_css_class("popularity-tile");
-    let (big_tile, big_state, _) = list_tile("OISD · MIXED LIST", "Ads, tracking & threats");
+    let (rank_scale, rank_position) = popularity_scale();
+    rank_tile.append(&rank_scale);
+    let (big_tile, big_state, _) = list_tile("OISD · BLOCKLIST", "Ads, tracking & threats");
     let (nsfw_tile, nsfw_state, _) = list_tile("OISD · ADULT CONTENT", "Adult & shock content");
     list_row.append(&rank_tile);
     list_row.append(&big_tile);
@@ -690,6 +774,8 @@ pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
     let insights_view = InsightsView {
         rank: rank_state,
         rank_caption,
+        rank_scale,
+        rank_position,
         big: big_state,
         nsfw: nsfw_state,
         note: list_note,
@@ -984,6 +1070,7 @@ pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
                             | "DNS unavailable"
                             | "Connection could not be verified"
                             | "Redirect stopped"
+                            | "Inspection stopped"
                             | "Internationalized hostname"
                             | "Proxy configuration detected"
                     ) {
@@ -1021,7 +1108,12 @@ pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
                     }
                 }
                 Ok(Event::PublicHost(name)) => {
-                    reputation(&reputation_button, &name, &reputation_result);
+                    reputation(
+                        &reputation_button,
+                        &name,
+                        &reputation_result,
+                        browser.clone(),
+                    );
                     match crate::whois::prepare(&name) {
                         Ok(lookup) => {
                             let disclosure = format!(
@@ -1117,6 +1209,45 @@ pub fn show(parent: &gtk::Window, link: &str, multiple: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "GTK PATH fallback fixture: set RELAY_BROWSER_CAPTURE and prepend a fake chromium to PATH"]
+    fn reputation_without_discovery_uses_path_browser() {
+        let capture = std::env::var_os("RELAY_BROWSER_CAPTURE")
+            .expect("Requires an isolated fake browser fixture");
+        // The explicit fixture requirement prevents ever opening a real browser.
+        let program = crate::relay::executable(&["chromium"]).unwrap();
+        assert_eq!(program.parent(), std::path::Path::new(&capture).parent());
+        gtk::init().unwrap();
+        let button = menu("VirusTotal");
+        let status = text("Opt-in", "list-note");
+        let (_, browser, failed) = glib::MainContext::default()
+            .block_on(gtk::gio::spawn_blocking(|| {
+                crate::ui::discover_for_ui(|| panic!("discovery fixture failed"))
+            }))
+            .unwrap();
+        assert!(failed);
+        reputation(&button, "example.org", &status, browser);
+        let content = button.popover().unwrap().child().unwrap();
+        let confirm = content
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        assert_eq!(confirm.label().as_deref(), Some("Open in Chromium ↗"));
+        assert!(confirm.is_sensitive());
+        confirm.emit_clicked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while status.text() != "Opened in browser" && std::time::Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(status.text(), "Opened in browser");
+        assert_eq!(
+            std::fs::read(capture).unwrap(),
+            b"--\0https://www.virustotal.com/gui/domain/example.org\0"
+        );
+    }
+
     #[test]
     #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
     fn peer_change_discards_a_late_online_lookup() {

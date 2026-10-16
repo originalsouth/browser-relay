@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::relay::{Action, executable, execute};
+use crate::relay::{Action, execute_gui};
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -116,34 +116,37 @@ fn route_button(
     description: &str,
     icon_name: &str,
     key: &str,
-    available: bool,
+    utility: bool,
 ) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("route");
-    button.set_sensitive(available);
     button.set_cursor_from_name(Some("pointer"));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-    let image = gtk::Image::from_icon_name(icon_name);
+    let image = gio::Icon::for_string(icon_name)
+        .map(|icon| gtk::Image::from_gicon(&icon))
+        .unwrap_or_else(|_| gtk::Image::from_icon_name("web-browser-symbolic"));
     image.set_pixel_size(32);
-    if matches!(key, "3" | "4" | "5") {
+    if utility {
         image.add_css_class("copy-icon");
     }
     row.append(&image);
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
-    text.append(&label(title, "route-title"));
-    text.append(&label(
-        if available {
-            description
-        } else {
-            "Not installed"
-        },
-        "route-description",
-    ));
+    let title_label = label(title, "route-title");
+    title_label.set_ellipsize(pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(25);
+    text.append(&title_label);
+    let description_label = label(description, "route-description");
+    description_label.set_ellipsize(pango::EllipsizeMode::End);
+    description_label.set_max_width_chars(34);
+    text.append(&description_label);
+    button.set_tooltip_text(Some(title));
     row.append(&text);
     let shortcut = label(key, "key");
     shortcut.set_valign(gtk::Align::Center);
-    row.append(&shortcut);
+    if !key.is_empty() {
+        row.append(&shortcut);
+    }
     button.set_child(Some(&row));
     button
 }
@@ -236,7 +239,12 @@ fn initialize() -> Result<()> {
     Ok(())
 }
 
-fn window() -> (gtk::Window, gtk::Box, glib::MainLoop) {
+fn content_height(monitor_height: i32) -> i32 {
+    monitor_height.saturating_sub(120).clamp(1, 960)
+}
+
+fn window() -> (gtk::Window, gtk::Box, glib::MainLoop, Rc<Cell<bool>>) {
+    let busy = Rc::new(Cell::new(false));
     let main_loop = glib::MainLoop::new(None, false);
     let window = gtk::Window::builder()
         .title("Browser Relay")
@@ -258,11 +266,43 @@ fn window() -> (gtk::Window, gtk::Box, glib::MainLoop) {
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_height(true)
+        .max_content_height(640)
         .child(&body)
         .build();
     window.set_child(Some(&scroll));
+    // The compositor chooses placement. Query the mapped surface, then track
+    // monitor crossings rather than assuming monitor zero is the destination.
+    let weak_scroll = scroll.downgrade();
+    let update = move |surface: &gdk::Surface| {
+        if let (Some(scroll), Some(monitor)) = (
+            weak_scroll.upgrade(),
+            surface.display().monitor_at_surface(surface),
+        ) {
+            scroll.set_max_content_height(content_height(monitor.geometry().height()));
+        }
+    };
+    let on_realize = update.clone();
+    window.connect_realize(move |window| {
+        let Some(surface) = window.surface() else {
+            return;
+        };
+        on_realize(&surface);
+        let on_enter = on_realize.clone();
+        surface.connect_enter_monitor(move |surface, _| on_enter(surface));
+        let on_leave = on_realize.clone();
+        surface.connect_leave_monitor(move |surface, _| on_leave(surface));
+    });
+    window.connect_map(move |window| {
+        if let Some(surface) = window.surface() {
+            update(&surface);
+        }
+    });
     let loop_clone = main_loop.clone();
+    let closing_busy = busy.clone();
     window.connect_close_request(move |_| {
+        if closing_busy.get() {
+            return glib::Propagation::Stop;
+        }
         loop_clone.quit();
         glib::Propagation::Proceed
     });
@@ -278,12 +318,35 @@ fn window() -> (gtk::Window, gtk::Box, glib::MainLoop) {
         glib::Propagation::Proceed
     });
     window.add_controller(keys);
-    (window, body, main_loop)
+    (window, body, main_loop, busy)
+}
+
+fn shortcut(index: usize, fallback: &str) -> String {
+    if index < 9 {
+        (index + 1).to_string()
+    } else {
+        fallback.into()
+    }
 }
 
 pub fn run(urls: &[String]) -> Result<()> {
+    run_with_discovery(urls, || {
+        let browsers = crate::browser::discover();
+        let preferred = crate::browser::preferred(&browsers);
+        (browsers, preferred)
+    })
+}
+
+fn run_with_discovery(
+    urls: &[String],
+    discover: impl FnOnce() -> (
+        Vec<crate::browser::Browser>,
+        Option<crate::browser::Browser>,
+    ) + Send
+    + 'static,
+) -> Result<()> {
     initialize()?;
-    let (window, body, main_loop) = window();
+    let (window, body, main_loop, busy) = window();
     let brand = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     brand.append(&icon()?);
     brand.append(&label("Browser Relay", "brand"));
@@ -340,46 +403,135 @@ pub fn run(urls: &[String]) -> Result<()> {
     eyebrow.set_margin_bottom(10);
     body.append(&eyebrow);
 
+    let loading = label("Finding browsers…", "footer");
+    body.append(&loading);
+    let cancel = gtk::EventControllerKey::new();
+    let weak_window = window.downgrade();
+    let cancel_busy = busy.clone();
+    cancel.connect_key_pressed(move |_, key, _, modifiers| {
+        if matches!(key, gdk::Key::q | gdk::Key::Q)
+            && !cancel_busy.get()
+            && !modifiers.intersects(
+                gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK
+                    | gdk::ModifierType::SUPER_MASK,
+            )
+        {
+            if let Some(window) = weak_window.upgrade() {
+                window.close();
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(cancel);
+    let weak_window = window.downgrade();
+    let urls = urls.to_vec();
+    glib::MainContext::default().spawn_local(async move {
+        let discovered = gio::spawn_blocking(move || discover_for_ui(discover)).await;
+        let Some(window) = weak_window.upgrade().filter(|w| w.is_visible()) else {
+            return;
+        };
+        match discovered {
+            Ok((browsers, preferred, failed)) => {
+                if failed {
+                    loading
+                        .set_text("Browser discovery failed · other actions are available below");
+                } else {
+                    body.remove(&loading);
+                }
+                populate(&window, &body, &urls, browsers, preferred, busy);
+            }
+            Err(_) => {
+                loading.set_text("Browser discovery failed · other actions are available below");
+                populate(&window, &body, &urls, Vec::new(), None, busy);
+            }
+        }
+    });
+    window.present();
+    main_loop.run();
+    Ok(())
+}
+
+pub(crate) fn discover_for_ui(
+    discover: impl FnOnce() -> (
+        Vec<crate::browser::Browser>,
+        Option<crate::browser::Browser>,
+    ),
+) -> (
+    Vec<crate::browser::Browser>,
+    Option<crate::browser::Browser>,
+    bool,
+) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(discover));
+    let failed = result.is_err();
+    let (browsers, preferred) = result.unwrap_or_default();
+    (
+        browsers,
+        preferred.or_else(crate::browser::fallback),
+        failed,
+    )
+}
+
+fn populate(
+    window: &gtk::Window,
+    body: &gtk::Box,
+    urls: &[String],
+    browsers: Vec<crate::browser::Browser>,
+    inspection_browser: Option<crate::browser::Browser>,
+    busy: Rc<Cell<bool>>,
+) {
     let routes = gtk::Box::new(gtk::Orientation::Vertical, 9);
-    let status = label("1 / 2 / 3 / 4 / 5 to choose   ·   Esc to dismiss", "footer");
+    let status = label(
+        "Ctrl+C copy · Ctrl+R QR · Ctrl+I inspect · Q/Esc dismiss",
+        "footer",
+    );
     status.set_margin_top(19);
     status.set_wrap(true);
     status.set_max_width_chars(48);
-    let busy = Rc::new(Cell::new(false));
-    let choices = [
-        (
-            Action::Chromium,
-            "Chromium",
-            "Open in Chromium",
-            "chromium",
-            "1",
-            executable(&["chromium", "chromium-browser"]).is_some(),
-        ),
-        (
-            Action::Firefox,
-            "Firefox",
-            "Open in Firefox",
-            "firefox",
-            "2",
-            executable(&["firefox", "firefox-esr"]).is_some(),
-        ),
-        (
-            Action::Copy,
-            "Copy link",
-            "Keep it on your clipboard",
-            "edit-copy-symbolic",
-            "3",
-            true,
-        ),
-    ];
-    let mut buttons = Vec::new();
-    for (action, title, description, icon_name, key, available) in choices {
-        let title = if action == Action::Copy && urls.len() > 1 {
+    if browsers.is_empty() {
+        let empty = label(
+            "No browsers found · Copy or scan the link below",
+            "subtitle",
+        );
+        empty.set_wrap(true);
+        routes.append(&empty);
+    }
+    let mut choices: Vec<_> = browsers
+        .into_iter()
+        .map(|browser| {
+            let name = browser.name.clone();
+            let icon = browser.icon.clone();
+            (
+                Action::Browser(browser),
+                name.clone(),
+                format!("Open in {name}"),
+                icon,
+            )
+        })
+        .collect();
+    choices.push((
+        Action::Copy,
+        if urls.len() > 1 {
             "Copy links"
         } else {
-            title
-        };
-        let button = route_button(title, description, icon_name, key, available);
+            "Copy link"
+        }
+        .into(),
+        "Keep it on your clipboard".into(),
+        "edit-copy-symbolic".into(),
+    ));
+    let copy_index = choices.len() - 1;
+    let mut buttons = Vec::new();
+    for (index, (action, title, description, icon_name)) in choices.into_iter().enumerate() {
+        let key = shortcut(index, if action == Action::Copy { "Ctrl+C" } else { "" });
+        let button = route_button(
+            &title,
+            &description,
+            &icon_name,
+            &key,
+            action == Action::Copy,
+        );
         routes.append(&button);
         let busy = busy.clone();
         let routes = routes.downgrade();
@@ -402,35 +554,27 @@ pub fn run(urls: &[String]) -> Result<()> {
             } else {
                 "Opening…"
             });
-            let (sender, receiver) = std::sync::mpsc::channel();
             let urls = urls.clone();
-            std::thread::spawn(move || {
-                let _ = sender.send(execute(action, &urls));
-            });
+            let action = action.clone();
+            let copied = action == Action::Copy;
             let busy = busy.clone();
-            let routes = routes.clone();
-            let status = status.clone();
-            let window = window.clone();
-            glib::timeout_add_local(Duration::from_millis(25), move || {
-                let result = match receiver.try_recv() {
-                    Ok(result) => result,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        return glib::ControlFlow::Continue;
-                    }
-                    Err(_) => Err("The action did not complete. Please try again.".into()),
-                };
+            glib::MainContext::default().spawn_local(async move {
+                let result = execute_gui(action, urls).await;
                 match result {
                     Ok(()) => {
                         status.add_css_class("success");
-                        status.set_text(if action == Action::Copy {
+                        status.set_text(if copied {
                             "✓ Copied to clipboard"
                         } else {
                             "✓ Opening in your browser"
                         });
                         let window = window.clone();
                         glib::timeout_add_local_once(
-                            Duration::from_millis(if action == Action::Copy { 750 } else { 200 }),
-                            move || window.close(),
+                            Duration::from_millis(if copied { 750 } else { 200 }),
+                            move || {
+                                busy.set(false);
+                                window.close();
+                            },
                         );
                     }
                     Err(error) => {
@@ -440,7 +584,6 @@ pub fn run(urls: &[String]) -> Result<()> {
                         busy.set(false);
                     }
                 }
-                glib::ControlFlow::Break
             });
         });
         buttons.push(button);
@@ -449,7 +592,7 @@ pub fn run(urls: &[String]) -> Result<()> {
         "Show QR code",
         "Reveal for another device",
         "camera-photo-symbolic",
-        "4",
+        &shortcut(copy_index + 1, "Ctrl+R"),
         true,
     );
     let weak_window = window.downgrade();
@@ -466,7 +609,7 @@ pub fn run(urls: &[String]) -> Result<()> {
         "Inspect link",
         "Contacts this URL · checks connection & lists",
         "security-high-symbolic",
-        "5",
+        &shortcut(copy_index + 2, "Ctrl+I"),
         true,
     );
     inspect_button.set_tooltip_text(Some(
@@ -476,7 +619,7 @@ pub fn run(urls: &[String]) -> Result<()> {
     let inspect_link = urls[0].clone();
     inspect_button.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {
-            crate::inspector_ui::show(&window, &inspect_link, multiple);
+            crate::inspector_ui::show(&window, &inspect_link, multiple, inspection_browser.clone());
         }
     });
     routes.append(&inspect_button);
@@ -485,39 +628,45 @@ pub fn run(urls: &[String]) -> Result<()> {
     body.append(&status);
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
-        if modifiers.intersects(
-            gdk::ModifierType::CONTROL_MASK
-                | gdk::ModifierType::ALT_MASK
-                | gdk::ModifierType::SUPER_MASK,
-        ) {
+        if modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK) {
             return glib::Propagation::Proceed;
         }
-        let index = match key {
-            gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
-            gdk::Key::_2 | gdk::Key::KP_2 => Some(1),
-            gdk::Key::_3 | gdk::Key::KP_3 => Some(2),
-            gdk::Key::_4 | gdk::Key::KP_4 => Some(3),
-            gdk::Key::_5 | gdk::Key::KP_5 => Some(4),
-            _ => None,
+        let index = if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            match key {
+                gdk::Key::c | gdk::Key::C => Some(copy_index),
+                gdk::Key::r | gdk::Key::R => Some(copy_index + 1),
+                gdk::Key::i | gdk::Key::I => Some(copy_index + 2),
+                _ => None,
+            }
+        } else {
+            match key {
+                gdk::Key::_1 | gdk::Key::KP_1 => Some(0),
+                gdk::Key::_2 | gdk::Key::KP_2 => Some(1),
+                gdk::Key::_3 | gdk::Key::KP_3 => Some(2),
+                gdk::Key::_4 | gdk::Key::KP_4 => Some(3),
+                gdk::Key::_5 | gdk::Key::KP_5 => Some(4),
+                gdk::Key::_6 | gdk::Key::KP_6 => Some(5),
+                gdk::Key::_7 | gdk::Key::KP_7 => Some(6),
+                gdk::Key::_8 | gdk::Key::KP_8 => Some(7),
+                gdk::Key::_9 | gdk::Key::KP_9 => Some(8),
+                _ => None,
+            }
         };
-        if let Some(index) = index {
-            if buttons[index].is_sensitive() {
-                buttons[index].emit_clicked();
+        if let Some(button) = index.and_then(|i| buttons.get(i)) {
+            if button.is_sensitive() {
+                button.emit_clicked();
             }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
     window.add_controller(keys);
-    window.present();
-    main_loop.run();
-    Ok(())
 }
 
 /// Desktop launchers have no URL; ask for one before displaying the chooser.
 pub fn prompt() -> Result<Option<String>> {
     initialize()?;
-    let (window, body, main_loop) = window();
+    let (window, body, main_loop, _) = window();
     let result = Rc::new(std::cell::RefCell::new(None));
     body.set_spacing(16);
     body.set_margin_start(24);
@@ -575,7 +724,192 @@ pub fn prompt() -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::destination;
+    use super::*;
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn busy_dismissal_and_browser_icon_style() {
+        initialize().unwrap();
+        let (window, _, _, busy) = window();
+        window.present();
+        busy.set(true);
+        window.close();
+        assert!(
+            window.is_visible(),
+            "Pending action must survive a window close"
+        );
+        busy.set(false);
+        window.close();
+        assert!(!window.is_visible());
+        for (utility, expected) in [(false, false), (true, true)] {
+            let button = route_button("Test", "", "web-browser-symbolic", "1", utility);
+            let image = button.child().unwrap().first_child().unwrap();
+            assert_eq!(image.has_css_class("copy-icon"), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn discovery_failure_keeps_copy_qr_and_inspect() {
+        initialize().unwrap();
+        fn labels(widget: &gtk::Widget, result: &mut Vec<String>) {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                result.push(label.text().to_string());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                labels(&widget, result);
+                child = widget.next_sibling();
+            }
+        }
+        let found = Rc::new(Cell::new(false));
+        let found_tick = found.clone();
+        let correct_monitor = Rc::new(Cell::new(false));
+        let monitor_tick = correct_monitor.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        glib::timeout_add_local(Duration::from_millis(20), move || {
+            let windows = gtk::Window::toplevels();
+            for i in 0..windows.n_items() {
+                if let Some(window) = windows.item(i).and_downcast::<gtk::Window>()
+                    && window.title().as_deref() == Some("Browser Relay")
+                {
+                    let mut text = Vec::new();
+                    labels(window.upcast_ref(), &mut text);
+                    let actions = ["Copy link", "Show QR code", "Inspect link"];
+                    let ready = actions.iter().all(|label| text.iter().any(|s| s == label));
+                    if ready || std::time::Instant::now() >= deadline {
+                        found_tick.set(ready);
+                        if let (Some(surface), Some(scroll)) = (
+                            window.surface(),
+                            window.child().and_downcast::<gtk::ScrolledWindow>(),
+                        ) && let Some(monitor) = surface.display().monitor_at_surface(&surface)
+                        {
+                            monitor_tick.set(
+                                scroll.max_content_height()
+                                    == content_height(monitor.geometry().height()),
+                            );
+                        }
+                        window.close();
+                        return glib::ControlFlow::Break;
+                    }
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+        run_with_discovery(
+            &["https://github.com/originalsouth/browser-relay".into()],
+            || panic!("discovery fixture failed"),
+        )
+        .unwrap();
+        assert!(
+            found.get(),
+            "Discovery failure removed browser-independent actions"
+        );
+        assert!(
+            correct_monitor.get(),
+            "Content limit must follow the window's surface monitor"
+        );
+    }
+
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn slow_discovery_does_not_block_cancellation() {
+        initialize().unwrap();
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let worker_gate = gate.clone();
+        let closed = Rc::new(Cell::new(false));
+        let closed_tick = closed.clone();
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            let windows = gtk::Window::toplevels();
+            for i in 0..windows.n_items() {
+                if let Some(window) = windows.item(i).and_downcast::<gtk::Window>()
+                    && window.title().as_deref() == Some("Browser Relay")
+                {
+                    assert!(window.is_visible());
+                    closed_tick.set(true);
+                    window.close();
+                }
+            }
+        });
+        let start = std::time::Instant::now();
+        run_with_discovery(
+            &["https://github.com/originalsouth/browser-relay".into()],
+            move || {
+                let (lock, ready) = &*worker_gate;
+                let _ = ready
+                    .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(3), |released| {
+                        !*released
+                    })
+                    .unwrap();
+                (Vec::new(), None)
+            },
+        )
+        .unwrap();
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_one();
+        assert!(closed.get());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "Discovery blocked the GTK loop"
+        );
+    }
+
+    #[test]
+    #[ignore = "GTK theme regression: run under Xvfb with G_DEBUG=fatal-warnings"]
+    fn scrollbars_have_valid_geometry() {
+        initialize().unwrap();
+        let content = gtk::DrawingArea::new();
+        content.set_content_width(900);
+        content.set_content_height(900);
+        let scroll = gtk::ScrolledWindow::builder().child(&content).build();
+        let window = gtk::Window::builder()
+            .default_width(300)
+            .default_height(240)
+            .child(&scroll)
+            .build();
+        window.add_css_class("relay");
+        window.present();
+        let settle = || {
+            let until = std::time::Instant::now() + Duration::from_millis(180);
+            while std::time::Instant::now() < until {
+                while glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        for overlay in [true, false] {
+            scroll.set_overlay_scrolling(overlay);
+            settle();
+            for bar in [scroll.hscrollbar(), scroll.vscrollbar()] {
+                for flags in [
+                    gtk::StateFlags::NORMAL,
+                    gtk::StateFlags::PRELIGHT,
+                    gtk::StateFlags::ACTIVE,
+                    gtk::StateFlags::BACKDROP,
+                ] {
+                    bar.set_state_flags(flags, true);
+                    settle();
+                    for axis in [gtk::Orientation::Horizontal, gtk::Orientation::Vertical] {
+                        let (min, natural, _, _) = bar.measure(axis, -1);
+                        assert!(
+                            min > 0 && natural >= min,
+                            "Scrollbar must retain usable geometry"
+                        );
+                    }
+                }
+            }
+            for adjustment in [scroll.hadjustment(), scroll.vadjustment()] {
+                assert!(adjustment.upper() > adjustment.page_size());
+                adjustment.set_value(100.0);
+                assert_eq!(adjustment.value(), 100.0);
+            }
+        }
+        content.set_content_width(10);
+        content.set_content_height(10);
+        settle();
+        assert!(!scroll.hscrollbar().is_child_visible());
+        assert!(!scroll.vscrollbar().is_child_visible());
+        window.close();
+    }
+
     #[test]
     fn preview_shows_actual_host_not_userinfo() {
         assert_eq!(

@@ -59,7 +59,7 @@ cat > "$applications/browser-relay.desktop" <<EOF
 Version=1.0
 Type=Application
 Name=Browser Relay
-Comment=Choose Chromium, Firefox, or copy a link
+Comment=Choose a browser, copy a link, or inspect its destination
 Exec="$exec_path" --prompt -- %U
 Icon=browser-relay
 StartupWMClass=browser-relay
@@ -101,4 +101,4 @@ if [[ $make_default == true ]]; then
 else
     echo "Installed without changing your default browser."
 fi
-printf 'Try: xdg-open https://example.com\nUninstall: %s/uninstall.sh\n' "$PWD"
+printf 'Try: xdg-open https://github.com/originalsouth/browser-relay\nUninstall: %s/uninstall.sh\n' "$PWD"

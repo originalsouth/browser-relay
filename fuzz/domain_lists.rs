@@ -5,6 +5,9 @@ use domain_list::{List, Snapshot};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
+    let budget = data.first().copied().unwrap_or(0) as usize * 1024;
+    let _ = Snapshot::read_bounded(data, budget);
+    let _ = domain_list::Rankings::read_bounded(data, budget);
     if let Ok(index) = domain_list::Rankings::decode(data) {
         assert_eq!(index.encode(), data);
         for name in [

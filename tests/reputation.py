@@ -68,18 +68,24 @@ with tempfile.TemporaryDirectory(prefix='relay-insights-test-') as temp:
     for name in ('WAYLAND_DISPLAY','BROWSER_RELAY_DIALOG','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy','NO_PROXY','no_proxy'):
         env.pop(name, None)
     env['http_proxy'] = f'http://127.0.0.1:{proxy.server_port}'
-    for host, rank, caption in [('child.example.com', '#2', 'Exact'), ('tenant.example.com', '#1', 'Parent')]:
+    cases = [
+        ('child.example.com', '#2', 'Exact', 'Listed', '#FF8995'),
+        ('tenant.example.com', 'Unranked', 'Parent #1', 'Listed', '#FF8995'),
+        ('adult.invalid', 'Unranked', 'Outside', 'Adult match', '#FFC27D'),
+        ('clean.invalid', 'Unranked', 'Outside', 'No match', '#8CDDA5'),
+    ]
+    for host, rank, caption, state, color in cases:
         proc = subprocess.Popen([str(ROOT / 'target/debug/browser-relay'), f'http://{host}/'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             parent = window(proc, '^Browser Relay$')
-            key('5')
+            key('ctrl+i')
             popup = window(proc, '^Inspect link$')
             # The proxy disclosure adds a banner; give that extra content space.
             command('xdotool', 'windowsize', popup, '800', '800')
             time.sleep(.6)
             image = folder / 'dashboard.png'
             text = screenshot(popup, image)
-            assert rank in text and caption in text and 'Listed' in text and 'No match' in text, text
+            assert rank in text and caption in text and state in text and 'No match' in text, text
             assert 'Details & privacy' in text, text
             # No vertical movement should be possible when all cards fit.
             command('xdotool', 'mousemove', '--window', popup, '500', '600', 'click', '--repeat', '12', '--delay', '20', '5')
@@ -92,6 +98,10 @@ with tempfile.TemporaryDirectory(prefix='relay-insights-test-') as temp:
             data = command('tesseract', str(folder / 'ocr.png'), 'stdout', '--psm', '11', 'tsv')
             row = next(row for row in csv.DictReader(io.StringIO(data), delimiter='\t') if row['text'] == 'DOMAIN')
             header_y = (int(row['top']) + int(row['height']) // 2) // 3
+            # Check the actual OISD tiles, excluding other dashboard colors and the popularity bar.
+            colors = command('convert', str(image), '-crop', f'450x85+290+{header_y + 15}', '-format', '%c', 'histogram:info:-').upper()
+            assert color in colors, f'{host}: missing status color {color}'
+            assert '#8CDDA5' in colors, f'{host}: no-match result must be green'
             windows = lambda: set(command('xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid)).split())
             visible_before = windows()
             command('xdotool', 'mousemove', '--window', popup, '744', str(header_y), 'click', '1')
@@ -104,10 +114,11 @@ with tempfile.TemporaryDirectory(prefix='relay-insights-test-') as temp:
             key('Escape')
             out, err = proc.communicate(timeout=5)
             assert proc.returncode == 0 and b'CRITICAL' not in err and b'CSS' not in err, (out, err)
+            assert b'reported min width' not in err and b'reported min height' not in err, err
         finally:
             if proc.poll() is None: proc.kill(); proc.wait()
-    assert requests == ['http://child.example.com/', 'http://tenant.example.com/'], requests
+    assert requests == [f'http://{case[0]}/' for case in cases], requests
     assert (folder / 'tranco.bin').read_bytes() == rank_cache
     proxy.shutdown()
     proxy.server_close()
-print('Exact and parent ranks stay distinct; popularity never hides OISD warnings; dashboard fits without scrolling; list refresh requires consent.')
+print('Exact/parent ranks, red OISD matches, orange adult matches, green no-matches, compact layout and update consent passed.')

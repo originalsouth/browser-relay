@@ -2,22 +2,37 @@
 name = "browser-relay"
 version = "0.2.0"
 edition = "2024"
-description = "Choose Chromium, Firefox, or the clipboard when opening a link"
+description = "Choose an installed browser, copy a link, or inspect its destination"
 license = "MIT"
 
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "browser-relay"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:gtk", "dep:gio-unix", "dep:reqwest", "dep:tokio", "dep:hickory-resolver", "dep:surge-ping", "dep:maxminddb"]
+mobile = ["dep:maxminddb"]
+
 [dependencies]
-gtk = { package = "gtk4", version = "0.11" }
+gtk = { package = "gtk4", version = "0.11", optional = true }
 qrcode = { version = "0.14", default-features = false }
 
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
-tokio = { version = "1", features = ["rt", "time", "macros", "net"] }
-hickory-resolver = "0.26.3"
-surge-ping = "0.9"
-maxminddb = "0.32"
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", optional = true, features = ["rt", "time", "macros", "net"] }
+hickory-resolver = { version = "0.26.3", optional = true }
+surge-ping = { version = "0.9", optional = true }
+maxminddb = { version = "0.32", optional = true }
 url = "2.5"
 serde_json = "1"
 x509-parser = { version = "0.18", default-features = false }
 psl = "2"
+time = { version = "0.3", features = ["parsing", "formatting"] }
+gio-unix = { version = "0.22", optional = true }
 
 [profile.release]
 lto = "fat"

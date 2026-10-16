@@ -17,10 +17,22 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
         p.write_text('#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\nexit "${BROWSER_EXIT:-0}"\n')
         p.chmod(0o755)
     p = folder / 'xclip'
-    p.write_text('#!/bin/sh\ncat > "$CAPTURE"\n')
+    p.write_text('#!/bin/sh\n/bin/sleep "${CLIPBOARD_DELAY:-0}"\n/bin/cat > "$CAPTURE"\n')
     p.chmod(0o755)
     env = dict(os.environ, PATH=f'{folder}:/usr/bin', GDK_BACKEND='x11',
-               GSK_RENDERER='cairo', CAPTURE=str(capture), GTK_A11Y='none')
+               GSK_RENDERER='cairo', CAPTURE=str(capture), GTK_A11Y='none', XDG_DATA_HOME=str(folder / 'data'), XDG_DATA_DIRS=str(folder / 'system'))
+    (folder / 'data/applications').mkdir(parents=True)
+    (folder / 'system/applications').mkdir(parents=True)
+    # Keep GTK icons and image loaders while isolating application discovery.
+    for share in (Path('/usr/local/share'), Path('/usr/share')):
+        if share.is_dir():
+            for source in share.iterdir():
+                dest = folder / 'system' / source.name
+                if source.name != 'applications' and not dest.exists():
+                    dest.symlink_to(source)
+    error_dialog = folder / 'zenity'
+    error_dialog.write_text('#!/bin/sh\nexit 0\n')
+    error_dialog.chmod(0o755)
     env.pop('WAYLAND_DISPLAY', None)
     env.pop('BROWSER_RELAY_DIALOG', None)
     link = 'https://github.com/originalsouth/browser-relay'
@@ -39,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
                 raise AssertionError(proc.communicate())
             time.sleep(.05)
         proc.kill()
-        raise AssertionError('Window did not become visible: ' + name)
+        raise AssertionError(('Window did not become visible: ' + name, proc.communicate(timeout=2)))
 
     def start(extra=None, links=None):
         proc = subprocess.Popen([str(BINARY), *(links or [link])], env=env | (extra or {}),
@@ -67,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
         out, err = proc.communicate(timeout=5)
         assert proc.returncode == 0, (out, err)
         assert b'CSS' not in err and b'CRITICAL' not in err, err
+        assert b'reported min width' not in err and b'reported min height' not in err, err
 
     def decode_qr(path):
         result = subprocess.run(['zbarimg', '--quiet', '--raw', '--nodbus', path],
@@ -104,7 +117,14 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
     proc, window = start(links=[inspect_link])
     time.sleep(.2)
     assert requests == [], 'Displaying the chooser must not inspect the URL'
-    key('5')
+    key('c')
+    key('i')
+    time.sleep(.3)
+    assert proc.poll() is None and requests == [], 'Plain letters must not copy or inspect'
+    key('q')
+    assert proc.wait(timeout=5) == 0 and requests == [], 'Q must cancel without inspection'
+    proc, window = start(links=[inspect_link])
+    key('ctrl+i')
     popup = find_window(proc, '^Inspect link$')
     deadline = time.monotonic() + 5
     while not requests and time.monotonic() < deadline:
@@ -176,6 +196,17 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
     assert capture.read_text() == long_link
     capture.unlink()
 
+    # Dismissal during an asynchronous action must not tear down its event loop.
+    proc, window = start({'CLIPBOARD_DELAY': '1'})
+    key('3')
+    key('q')
+    key('Escape')
+    time.sleep(.15)
+    assert proc.poll() is None, 'Q/Escape cancelled a pending clipboard action'
+    finish(proc)
+    assert capture.read_text() == link
+    capture.unlink()
+
     for shortcut in ('1', '2'):
         proc, _ = start()
         key(shortcut)
@@ -221,3 +252,63 @@ with tempfile.TemporaryDirectory(prefix='browser-relay-ui-') as temp:
     print('QR hidden by default; explicit reveal, dismiss, decoding, length limit and multiple links passed.')
     print('Desktop launcher input and cancellation passed.')
     print('Native UI: cancellation, browser shortcuts, clipboard, and error recovery passed.')
+
+    # Discover arbitrary desktop browsers and keep a long menu on screen.
+    custom = folder / 'custom-browser'
+    custom.write_text('#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\n')
+    custom.chmod(0o755)
+    apps = folder / 'data/applications'
+    for n in range(1, 11):
+        (apps / f'custom-{n}.desktop').write_text(
+            f'[Desktop Entry]\nType=Application\nName=Browser {n:02}\n'
+            f'Exec="{custom}" --browser={n} %U\n'
+            'Icon=web-browser-symbolic\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n')
+    proc, window = start()
+    geometry = dict(line.split('=', 1) for line in subprocess.check_output(
+        ['xdotool', 'getwindowgeometry', '--shell', window], text=True).splitlines() if '=' in line)
+    assert int(geometry['HEIGHT']) <= 960, geometry
+    key('ctrl+r')
+    popup = find_window(proc, '^Link QR code$')
+    subprocess.run(['import', '-window', popup, '/tmp/browser-relay-many-qr.png'], check=True)
+    assert decode_qr('/tmp/browser-relay-many-qr.png') == link
+    hide_qr(proc, window)
+    key('9')
+    finish(proc)
+    assert capture.read_bytes() == f'--browser=9\0{link}\0'.encode()
+    capture.unlink()
+    proc, window = start()
+    key('ctrl+c')
+    finish(proc)
+    assert capture.read_text() == link
+    capture.unlink()
+
+    # With no browsers, Copy/QR/Inspect remain usable and unused digits are harmless.
+    for desktop in apps.glob('*.desktop'):
+        desktop.unlink()
+    for name in ('chromium', 'firefox'):
+        (folder / name).unlink()
+    for name in ('chromium', 'firefox'):
+        (apps / f'{name}.desktop').write_text('[Desktop Entry]\nHidden=true\n')
+    proc, window = start()
+    key('9')
+    assert proc.poll() is None
+    key('2')
+    find_window(proc, '^Link QR code$')
+    hide_qr(proc, window)
+    key('1')
+    finish(proc)
+    assert capture.read_text() == link
+    print('Dynamic browser discovery, long menus, stable shortcuts and no-browser mode passed.')
+
+    # GDK launch context supplies startup notification to desktop handlers.
+    activation = folder / 'activation-browser'
+    activation.write_text('#!/bin/sh\nprintf "%s" "$DESKTOP_STARTUP_ID" > "$CAPTURE.activation"\n')
+    activation.chmod(0o755)
+    (apps / 'activation.desktop').write_text(
+        f'[Desktop Entry]\nType=Application\nName=Activation Fixture\nExec="{activation}" %U\n'
+        'MimeType=x-scheme-handler/https;\nStartupNotify=true\n')
+    proc, window = start()
+    key('1')
+    finish(proc)
+    assert (folder / 'capture.activation').read_text(), 'Desktop launch lost its startup notification context'
+    print('Desktop browser receives GDK startup notification context.')
