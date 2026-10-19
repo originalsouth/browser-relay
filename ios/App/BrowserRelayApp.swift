@@ -93,37 +93,10 @@ struct BrowserView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                HStack {
-                    Image(systemName: "globe").foregroundStyle(.secondary)
-                    TextField("Enter an https:// address", text: $address)
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .focused($editing).submitLabel(.go).onSubmit { visit() }
-                    Button(action: visit) { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Open address")
-                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14)).padding(12)
+                addressBar
                 if let error = browser.error { Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
-                if browser.hasPage {
-                    WebPage(browser: browser)
-                } else {
-                    VStack(spacing: 20) {
-                        Image(systemName: "arrow.triangle.branch").font(.system(size: 60)).foregroundStyle(.purple)
-                        Text("Your link. Your call.").font(.largeTitle.bold())
-                        Text("Visit an address above, or inspect it before opening. Shared links are available from the iOS Share menu.")
-                            .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        Button("Inspect this address") { inspectAddress() }.buttonStyle(.borderedProminent).disabled(address.isEmpty)
-                    }.padding(28).frame(maxHeight: .infinity)
-                }
-                HStack(spacing: 24) {
-                    Button { browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back").disabled(!browser.canGoBack)
-                    Button { browser.webView.goForward() } label: { Image(systemName: "chevron.right") }.accessibilityLabel("Forward").disabled(!browser.canGoForward)
-                    Button { browser.loading ? browser.webView.stopLoading() : browser.webView.reload() } label: {
-                        Image(systemName: browser.loading ? "xmark" : "arrow.clockwise")
-                    }.accessibilityLabel(browser.loading ? "Stop loading" : "Reload")
-                    Spacer()
-                    if let url = URL(string: browser.current), browser.hasPage { ShareLink(item: url).labelStyle(.iconOnly) }
-                    Button { toolsLink = SelectedLink(url: browser.hasPage ? browser.current : address) } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }.accessibilityLabel("Link tools").disabled(browser.current.isEmpty && address.isEmpty)
-                }.font(.title3).padding(16).background(.bar)
+                content
+                controls
             }
             .navigationTitle("Browser Relay").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Data") { showData = true } } }
@@ -138,16 +111,56 @@ struct BrowserView: View {
                 address = url.absoluteString
                 browser.open(address)
             }
-            .sheet(item: $toolsLink) { selected in
-                NavigationStack {
-                    VStack(spacing: 0) {
-                        RelayView(link: selected.url)
-                        HandoffView(link: selected.url)
-                    }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { toolsLink = nil } } }
-                }
-            }
+            .sheet(item: $toolsLink) { selected in toolsSheet(selected) }
             .sheet(isPresented: $showData) { DataView() }
         }.preferredColorScheme(.dark).tint(Color(red: 0.66, green: 0.51, blue: 1))
+    }
+    // Split out of body: one expression this size times out Swift's type checker.
+    private var addressBar: some View {
+        HStack {
+            Image(systemName: "globe").foregroundStyle(.secondary)
+            TextField("Enter an https:// address", text: $address)
+                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                .focused($editing).submitLabel(.go).onSubmit { visit() }
+            Button(action: visit) { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Open address")
+        }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14)).padding(12)
+    }
+    @ViewBuilder private var content: some View {
+        if browser.hasPage {
+            WebPage(browser: browser)
+        } else {
+            VStack(spacing: 20) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 60)).foregroundStyle(.purple)
+                Text("Your link. Your call.").font(.largeTitle.bold())
+                Text("Visit an address above, or inspect it before opening. Shared links are available from the iOS Share menu.")
+                    .multilineTextAlignment(.center).foregroundStyle(.secondary)
+                Button("Inspect this address") { inspectAddress() }.buttonStyle(.borderedProminent).disabled(address.isEmpty)
+            }.padding(28).frame(maxHeight: .infinity)
+        }
+    }
+    private var controls: some View {
+        HStack(spacing: 24) {
+            Button { browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back").disabled(!browser.canGoBack)
+            Button { browser.webView.goForward() } label: { Image(systemName: "chevron.right") }.accessibilityLabel("Forward").disabled(!browser.canGoForward)
+            Button {
+                if browser.loading { browser.webView.stopLoading() } else { browser.webView.reload() }
+            } label: {
+                Image(systemName: browser.loading ? "xmark" : "arrow.clockwise")
+            }.accessibilityLabel(browser.loading ? "Stop loading" : "Reload")
+            Spacer()
+            if let url = URL(string: browser.current), browser.hasPage { ShareLink(item: url).labelStyle(.iconOnly) }
+            Button { toolsLink = SelectedLink(url: browser.hasPage ? browser.current : address) } label: {
+                Image(systemName: "slider.horizontal.3")
+            }.accessibilityLabel("Link tools").disabled(browser.current.isEmpty && address.isEmpty)
+        }.font(.title3).padding(16).background(.bar)
+    }
+    private func toolsSheet(_ selected: SelectedLink) -> some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                RelayView(link: selected.url)
+                HandoffView(link: selected.url)
+            }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { toolsLink = nil } } }
+        }
     }
     private func visit() { editing = false; browser.open(address) }
     private func inspectAddress() {
