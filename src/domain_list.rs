@@ -284,6 +284,14 @@ mod tests {
         extra.push(0);
         assert!(Snapshot::decode(&extra).is_err());
     }
+
+    #[test]
+    fn entries_expose_every_indexed_rank() {
+        let ranks = Rankings::parse("1,b.example\n2,_dmarc.x\n3,a.example", "T", "d", 0).unwrap();
+        let mut entries: Vec<_> = ranks.entries().collect();
+        entries.sort_by_key(|(_, rank)| *rank);
+        assert_eq!(entries, [("b.example", 1), ("a.example", 3)]);
+    }
 }
 
 const RANK_MAGIC: &[u8; 8] = b"BR-RANK\x02";
@@ -375,6 +383,10 @@ impl Rankings {
             }
             suffix = suffix.split_once('.')?.1;
         }
+    }
+    /// Every indexed hostname with its published rank, in name order.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, u32)> {
+        (0..self.domains.len()).map(|index| (self.domains.at(index), self.ranks[index]))
     }
     pub fn storage_bytes(&self) -> usize {
         self.domains.storage_bytes() + self.ranks.len() * 4 + self.list_id.len()

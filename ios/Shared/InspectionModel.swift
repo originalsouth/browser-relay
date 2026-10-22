@@ -13,12 +13,15 @@ final class InspectionModel: ObservableObject {
     @Published var hops: [Hop] = []
     @Published var decision: RouteDecision?
     @Published var insights: LocalInsights?
+    @Published var risk: RiskReport?
     @Published var message: String?
     @Published var busy = false
     private var task: Task<Void, Never>?
     private var routeID: UInt64?
     private var generation = UUID()
     private var insightNames: [String]?
+    private var link = ""
+    private var attempts: [[String: Any]] = []
     private let transfer: @Sendable (URL) async throws -> TransferResult
     private let loadInsights: @Sendable (URL, [String]) async throws -> LocalInsights
 
@@ -37,7 +40,9 @@ final class InspectionModel: ObservableObject {
 
     func start(_ link: String) {
         cancel()
-        hops = []; decision = nil; insights = nil; insightNames = nil; message = nil
+        self.link = link
+        attempts = []
+        hops = []; decision = nil; insights = nil; risk = nil; insightNames = nil; message = nil
         let token = generation
         busy = true
         task = Task {
@@ -48,7 +53,7 @@ final class InspectionModel: ObservableObject {
                 let first: RouteDecision = try Core.call(["op": "route_start", "url": link])
                 routeID = first.id
                 try await drive(first, token: token)
-            } catch { failed(error, token: token) }
+            } catch { await failed(error, token: token) }
         }
     }
 
@@ -62,7 +67,7 @@ final class InspectionModel: ObservableObject {
                 guard token == generation else { return }
                 let next: RouteDecision = try Core.call(["op": "route_continue", "id": routeID])
                 try await drive(next, token: token)
-            } catch { failed(error, token: token) }
+            } catch { await failed(error, token: token) }
         }
     }
 
@@ -81,6 +86,10 @@ final class InspectionModel: ObservableObject {
                 insightNames = next.names
             }
             guard next.action == "request", let text = next.url, let url = URL(string: text) else { break }
+            attempts.append(["url": text])
+            await refreshRisk(root: root, finished: false, complete: false, token: token)
+            try Task.checkCancellation()
+            guard token == generation else { throw CancellationError() }
             let result = try await transfer(url)
             try Task.checkCancellation()
             guard token == generation else { throw CancellationError() }
@@ -94,21 +103,44 @@ final class InspectionModel: ObservableObject {
             }
             try Task.checkCancellation()
             guard token == generation else { throw CancellationError() }
+            attempts[attempts.count - 1]["status"] = result.status
+            if let c = certificate, let a = c.notBefore, let b = c.notAfter {
+                attempts[attempts.count - 1]["notBefore"] = a
+                attempts[attempts.count - 1]["notAfter"] = b
+            }
             hops.append(Hop(url: text, result: result, certificate: certificate, geo: geo))
+            await refreshRisk(root: root, finished: false, complete: false, token: token)
+            try Task.checkCancellation()
+            guard token == generation else { throw CancellationError() }
             var response: [String: Any] = ["op": "route_response", "id": next.id, "status": result.status]
             if let location = result.location { response["location"] = location }
             next = try Core.call(response)
         }
+        let finalRoot = try Storage.directory()
+        await refreshRisk(root: finalRoot, finished: true, complete: next.complete, token: token)
+        try Task.checkCancellation()
+        guard token == generation else { throw CancellationError() }
         busy = false
         message = next.notice
         if next.action != "consent" { releaseRoute() }
     }
 
-    private func failed(_ error: Error, token: UUID) {
+    private func refreshRisk(root: URL, finished: Bool, complete: Bool, token: UUID) async {
+        let report: RiskReport? = try? await Core.work(["op": "risk", "directory": root.path, "link": link, "hops": attempts,
+                                                        "finished": finished, "complete": complete])
+        guard !Task.isCancelled, token == generation else { return }
+        // A failed recompute keeps the last report rather than blanking the panel.
+        if let report { risk = report }
+    }
+
+    private func failed(_ error: Error, token: UUID) async {
         guard token == generation else { return }
         busy = false
         if !(error is CancellationError) { message = error.localizedDescription }
         releaseRoute()
+        // A user stop bumps the generation first, so only real failures reach here with a current token.
+        guard !(error is CancellationError), let root = try? Storage.directory() else { return }
+        await refreshRisk(root: root, finished: true, complete: false, token: token)
     }
 
     private func releaseRoute() {

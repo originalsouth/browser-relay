@@ -44,7 +44,17 @@ enum Core {
 struct Empty: Decodable, Sendable {}
 struct ValidLink: Decodable, Sendable { let url: String; let inspectionURL: String; let host: String }
 struct QR: Decodable, Sendable { let width: Int; let quietZone: Int; let modules: [Bool] }
-struct Certificate: Decodable, Sendable { let subject: String; let issuer: String; let detail: String }
+struct Certificate: Decodable, Sendable { let subject: String; let issuer: String; let detail: String; let notBefore: Int64?; let notAfter: Int64? }
+struct RiskReport: Decodable, Sendable {
+    struct Compare: Decodable, Sendable, Hashable { let shown: String; let brand: String; let shownSpan: [Int]; let brandSpan: [Int] }
+    struct Factor: Decodable, Sendable, Hashable { let id: String; let severity: String; let word: String; let title: String; let evidence: String; let compare: Compare? }
+    let factors: [Factor]
+    let summary: String
+    let highest: String?
+    let lookalikes: Bool
+    let unavailable: String?
+    let detail: String
+}
 struct RouteDecision: Decodable, Sendable {
     let id: UInt64
     let action: String

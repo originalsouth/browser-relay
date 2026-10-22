@@ -45,14 +45,18 @@ top million after confirmation. Matching is local. Import a country MMDB under
 [DB-IP.com](https://db-ip.com/), CC BY 4.0. Rust supplies the download/import limits
 to Swift. Mobile lookups stream one index at a time directly into final storage,
 then release it; indexes are not cached in memory. A 32 MiB allocation budget
-covers the reader buffer, decoded index and rank-validation scratch. Local work
+covers the reader buffer, decoded index and rank-validation scratch, plus the
+lookalike index when built alongside Tranco. Local work
 is serialized so concurrent inspections cannot multiply that allowance. Larger
 indexes report unavailable; updates validate that same allowance before replacing
-a working index. Reports are reused while an inspection's host history is unchanged.
+a working index. If Tranco leaves too little room for lookalikes, those checks
+report unavailable while rank lookups remain usable. Only small host-factor
+reports are cached; unchanged hosts reuse them, and replacing the index
+invalidates them. Route and certificate factors are recomputed for each attempt.
 The UI and OS add their own memory use; Share-extension
 behavior still needs device testing. List updates run in the main app.
 
-A Linux release probe of the mobile Rust core with 14.54 MiB OISD and 23.62 MiB
+An earlier Linux release probe, before lookalike checks, of the mobile Rust core with 14.54 MiB OISD and 23.62 MiB
 Tranco indexes peaked at 28.7 MiB process RSS. Three complete lookup passes took
 305 ms with warm OS file caches. This excludes SwiftUI and is not an iOS device
 measurement.

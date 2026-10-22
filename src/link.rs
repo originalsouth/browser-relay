@@ -30,6 +30,16 @@ pub fn host(url: &Url) -> String {
         .to_string()
 }
 
+/// Website ownership boundary, including private hosting suffixes such as
+/// github.io. WHOIS deliberately uses a different, ICANN-only boundary.
+pub fn site_domain(name: &str) -> Result<String> {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    if !public_name(&name) || name.parse::<IpAddr>().is_ok() {
+        return Err("No public website boundary found.".into());
+    }
+    Ok(psl::domain_str(&name).unwrap_or(&name).to_owned())
+}
+
 // Conservative exclusion of non-public/special-purpose networks. Mapped IPv6
 // must not bypass the IPv4 checks. This gates disclosure, not a trust verdict.
 pub fn public_ip(ip: IpAddr) -> bool {

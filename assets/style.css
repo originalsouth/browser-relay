@@ -77,6 +77,20 @@ window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
 .relay .insight-tile .list-state.list-unknown { color: #aaa1ba; }
 .relay .insight-action > button { padding: 3px 8px; min-height: 20px; font-size: 11px; border-radius: 7px; }
 
+.relay .risk-warning { color: #ff8995; }
+.relay .dashboard-value.risk-warning { font-weight: 750; }
+.relay .risk-caution { color: #ffc27d; }
+.relay .risk-notice { color: #decbff; }
+.relay .risk-none { color: #aaa1ba; }
+.relay .risk-card { padding: 5px 12px; }
+.relay .risk-summary { font-size: 12px; font-weight: 650; }
+.relay .risk-card expander { padding: 3px 0; }
+.relay .risk-title { color: #f2effa; }
+.relay .risk-tag { font-size: 10px; font-weight: 650; letter-spacing: .4px; }
+.relay .risk-detail { margin: 2px 0 6px 26px; }
+.relay .risk-compare { font-family: monospace; font-size: 13px; color: #decbff; }
+.relay .inspector-footer { background: #24232e; border-top: 1px solid #3b354b; padding: 8px 24px; }
+
 .relay .domain-insights .list-refresh > button { padding: 1px; min-height: 16px; }
 
 /* Breeze's negative slider margins can produce a -2px minimum in GTK 4.

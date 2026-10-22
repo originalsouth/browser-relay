@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const PRIVACY: &str = "Inspect sends the path and query to the destination using HEAD requests. Your DNS resolver sees queried hostnames; ping contacts the connected peer. Same-origin redirects are followed. Another origin requires a separate click; HTTPS downgrades are stopped. Fragments and credentials are never sent. No cookies, page scripts, or embedded resources are loaded.\n\nTranco and OISD match cached domain lists locally. Tranco includes subdomains, checks exact names first, and labels parent-only matches. Popularity never overrides a blocklist warning. Big combines ads/tracking and security threats; NSFW is a separate adult/shock list. A match is not a malware verdict, and no match is not proof of safety. Explicit list updates download the full lists without sending inspected hostnames or URLs.\n\nGeoIP uses a local database. Locations are approximate and may describe a CDN or proxy rather than the origin. Proxy settings are respected; separate DNS and ping checks are skipped when a proxy is configured.\n\nOnline GeoIP, VirusTotal and WHOIS / RDAP stay off until explicitly requested. WHOIS sends only the registered domain to the registry shown in the disclosure; a bundled IANA map and public-suffix list choose it locally. Referrals and redirects are never followed. Registration records can be redacted and do not verify the operator. Each lookup shows the exact public hostname or IP it shares. Services see your connection IP and may log the request. Private/reserved destinations are excluded. VirusTotal opens in your browser, where cookies, account identity, and other third parties may apply.\n\nHTTPS validates the connection, not the content. Popularity is not a safety score. ICMP can be blocked; a failed ping does not establish whether a site is safe.";
+const PRIVACY: &str = "Inspect sends the path and query to the destination using HEAD requests. Your DNS resolver sees queried hostnames; ping contacts the connected peer. Same-origin redirects are followed. Another origin requires a separate click; HTTPS downgrades are stopped. Fragments and credentials are never sent. No cookies, page scripts, or embedded resources are loaded.\n\nTranco and OISD match cached domain lists locally. Tranco includes subdomains, checks exact names first, and labels parent-only matches. Popularity never overrides a blocklist warning. Big combines ads/tracking and security threats; NSFW is a separate adult/shock list. A match is not a malware verdict, and no match is not proof of safety. Explicit list updates download the full lists without sending inspected hostnames or URLs.\n\nRisk factors are computed on this device from the observed route, certificates and the local Tranco index (lookalike names). They send nothing. They are reasons to look closer; finding none does not mean a site is safe.\n\nGeoIP uses a local database. Locations are approximate and may describe a CDN or proxy rather than the origin. Proxy settings are respected; separate DNS and ping checks are skipped when a proxy is configured.\n\nOnline GeoIP, VirusTotal and WHOIS / RDAP stay off until explicitly requested. WHOIS sends only the registered domain to the registry shown in the disclosure; a bundled IANA map and public-suffix list choose it locally. Referrals and redirects are never followed. Registration records can be redacted and do not verify the operator. Each lookup shows the exact public hostname or IP it shares. Services see your connection IP and may log the request. Private/reserved destinations are excluded. VirusTotal opens in your browser, where cookies, account identity, and other third parties may apply.\n\nHTTPS validates the connection, not the content. Popularity is not a safety score. ICMP can be blocked; a failed ping does not establish whether a site is safe.";
 
 fn text(value: &str, class: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(value));
@@ -348,6 +348,201 @@ fn list_tile(title: &str, caption: &str) -> (gtk::Box, gtk::Label, gtk::Label) {
     (group, value, caption)
 }
 
+fn severity_style(severity: browser_relay::risk::Severity) -> (&'static str, &'static str) {
+    use browser_relay::risk::Severity;
+    // Adwaita has no emblem-default-symbolic, and a check mark would read as
+    // an all-clear; the severity word and colour tell cautions and notices apart.
+    match severity {
+        Severity::Warning => ("dialog-warning-symbolic", "risk-warning"),
+        Severity::Caution => ("dialog-information-symbolic", "risk-caution"),
+        Severity::Notice => ("dialog-information-symbolic", "risk-notice"),
+    }
+}
+
+fn comparison_markup(shown: &str, brand: &str) -> String {
+    let (prefix, suffix) = browser_relay::risk::differing_span(shown, brand);
+    let mark = |value: &str| {
+        let chars: Vec<char> = value.chars().collect();
+        let end = chars.len() - suffix;
+        let part = |range: std::ops::Range<usize>| {
+            glib::markup_escape_text(&chars[range].iter().collect::<String>()).to_string()
+        };
+        format!(
+            "{}<span weight=\"bold\" underline=\"single\" foreground=\"#ffc27d\">{}</span>{}",
+            part(0..prefix),
+            part(prefix..end),
+            part(end..chars.len())
+        )
+    };
+    format!("This link   {}\nLooks like  {}", mark(shown), mark(brand))
+}
+
+/// GtkExpander never links its label widget as labelled-by, and GTK before
+/// 4.14 computes no name from content. Builder's <accessibility> sets the
+/// name on GTK 4.0 without a newer gtk4-rs feature.
+fn expander_ui(label: &str) -> String {
+    format!(
+        "<interface><object class=\"GtkExpander\" id=\"row\"><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
+        glib::markup_escape_text(label)
+    )
+}
+
+fn labelled_expander(label: &str) -> gtk::Expander {
+    let builder = gtk::Builder::new();
+    builder
+        .add_from_string(&expander_ui(label))
+        .ok()
+        .and_then(|_| builder.object::<gtk::Expander>("row"))
+        .unwrap_or_default()
+}
+
+fn row_key(factor: &browser_relay::risk::Factor) -> String {
+    format!("{}\u{1f}{}", factor.id, factor.title)
+}
+
+/// Owns the card's widgets and last state; re-renders only on change and
+/// keeps each row's expanded state across updates.
+#[derive(Clone)]
+struct RiskView {
+    disclosure: gtk::Expander,
+    available: Rc<Cell<bool>>,
+    summary: gtk::Label,
+    rows: gtk::Box,
+    missing: gtk::Box,
+    shield: gtk::Image,
+    factors: Rc<RefCell<Vec<browser_relay::risk::Factor>>>,
+    finished: Rc<Cell<bool>>,
+    complete: Rc<Cell<bool>>,
+}
+impl RiskView {
+    fn update(&self, factors: Vec<browser_relay::risk::Factor>, lookalikes: bool) {
+        self.missing.set_visible(!lookalikes);
+        self.available.set(lookalikes);
+        let new_warning = factors.iter().any(|f| {
+            f.severity == browser_relay::risk::Severity::Warning
+                && !self
+                    .factors
+                    .borrow()
+                    .iter()
+                    .any(|old| old.severity == f.severity && row_key(old) == row_key(f))
+        });
+        if new_warning {
+            self.disclosure.set_expanded(true);
+        }
+        if *self.factors.borrow() != factors {
+            *self.factors.borrow_mut() = factors;
+            self.rebuild_rows();
+        }
+        self.render_summary();
+    }
+    fn finish(&self, complete: bool) {
+        self.finished.set(true);
+        self.complete.set(complete);
+        self.render_summary();
+    }
+    /// Checking resumed after a consent pause.
+    fn resume(&self) {
+        self.finished.set(false);
+        self.render_summary();
+    }
+    fn render_summary(&self) {
+        let factors = self.factors.borrow();
+        let (text, highest) =
+            browser_relay::risk::summary(&factors, self.finished.get(), self.complete.get());
+        let text = if self.available.get() {
+            text
+        } else {
+            format!("{text} · lookalikes off")
+        };
+        self.summary.set_text(&text);
+        self.summary.set_tooltip_text(Some(&text));
+        for class in ["risk-warning", "risk-caution", "risk-notice", "risk-none"] {
+            self.summary.remove_css_class(class);
+        }
+        self.summary
+            .add_css_class(highest.map_or("risk-none", |s| severity_style(s).1));
+        let warned = highest == Some(browser_relay::risk::Severity::Warning);
+        self.shield.set_icon_name(Some(if warned {
+            "dialog-warning-symbolic"
+        } else {
+            "security-high-symbolic"
+        }));
+        if warned {
+            self.shield.add_css_class("risk-warning");
+        } else {
+            self.shield.remove_css_class("risk-warning");
+        }
+    }
+    fn rebuild_rows(&self) {
+        let mut previous = std::collections::HashMap::new();
+        let focus = self.rows.root().and_then(|root| root.focus());
+        let mut focused = None;
+        while let Some(child) = self.rows.first_child() {
+            if let Ok(expander) = child.clone().downcast::<gtk::Expander>() {
+                let key = expander.widget_name().to_string();
+                if focus
+                    .as_ref()
+                    .is_some_and(|widget| widget == &child || widget.is_ancestor(&child))
+                {
+                    focused = Some(key.clone());
+                }
+                previous.insert(key, expander.is_expanded());
+            }
+            self.rows.remove(&child);
+        }
+        for factor in self.factors.borrow().iter() {
+            let key = row_key(factor);
+            let expanded = previous
+                .get(&key)
+                .copied()
+                .unwrap_or(factor.severity == browser_relay::risk::Severity::Warning);
+            let (icon, class) = severity_style(factor.severity);
+            let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let image = gtk::Image::from_icon_name(icon);
+            image.add_css_class(class);
+            head.append(&image);
+            let title = text(&factor.title, "risk-title");
+            title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            title.set_hexpand(true);
+            title.set_xalign(0.0);
+            // On the title only, so it never covers the expanded evidence.
+            title.set_tooltip_text(Some(&factor.title));
+            head.append(&title);
+            let tag = text(factor.severity.word(), "risk-tag");
+            tag.add_css_class(class);
+            // The word carries severity alongside the colour; never truncate it.
+            tag.set_ellipsize(gtk::pango::EllipsizeMode::None);
+            head.append(&tag);
+            let detail = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            detail.add_css_class("risk-detail");
+            if let Some((shown, brand)) = &factor.compare {
+                let compare = gtk::Label::new(None);
+                compare.set_markup(&comparison_markup(shown, brand));
+                compare.add_css_class("risk-compare");
+                compare.set_xalign(0.0);
+                compare.set_selectable(true);
+                compare.set_focusable(false);
+                detail.append(&compare);
+            }
+            let evidence = wrapped(&factor.evidence);
+            evidence.set_selectable(true);
+            evidence.set_focusable(false);
+            detail.append(&evidence);
+            let expander =
+                labelled_expander(&format!("{}: {}", factor.severity.word(), factor.title));
+            expander.set_label_widget(Some(&head));
+            expander.set_child(Some(&detail));
+            expander.set_expanded(expanded);
+            expander.set_widget_name(&key);
+            self.rows.append(&expander);
+            // Rebuilding must not drop keyboard focus from the row being read.
+            if focused.as_deref() == Some(key.as_str()) {
+                expander.grab_focus();
+            }
+        }
+    }
+}
+
 fn reputation(
     button: &gtk::MenuButton,
     name: &str,
@@ -592,6 +787,7 @@ pub fn show(
     link: &str,
     multiple: bool,
     browser: Option<crate::browser::Browser>,
+    on_close: impl Fn(&[browser_relay::risk::Factor]) + 'static,
 ) {
     let popup = gtk::Window::builder()
         .title("Inspect link")
@@ -599,7 +795,7 @@ pub fn show(
         .modal(true)
         .destroy_with_parent(true)
         .default_width(800)
-        .default_height(720)
+        .default_height(780)
         .icon_name("browser-relay")
         .build();
     popup.add_css_class("relay");
@@ -608,7 +804,7 @@ pub fn show(
     header.set_decoration_layout(Some(":close"));
     header.set_title_widget(Some(&text("LINK INSPECTION", "brand")));
     popup.set_titlebar(Some(&header));
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
     body.set_margin_start(24);
     body.set_margin_end(24);
     body.set_margin_top(10);
@@ -646,6 +842,57 @@ pub fn show(
     warning.append(&notice);
     banner.set_child(Some(&warning));
     body.append(&banner);
+
+    let risk_card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    risk_card.add_css_class("dashboard-card");
+    risk_card.add_css_class("risk-card");
+    let risk_disclosure = labelled_expander("Risk factors and evidence");
+    let risk_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let risk_heading = text("RISK FACTORS", "eyebrow");
+    risk_heading.set_ellipsize(gtk::pango::EllipsizeMode::None);
+    risk_header.append(&risk_heading);
+    let risk_summary = text("Checking the route…", "risk-summary");
+    risk_summary.set_max_width_chars(80);
+    risk_summary.set_hexpand(true);
+    risk_summary.add_css_class("risk-none");
+    risk_header.append(&risk_summary);
+    risk_disclosure.set_label_widget(Some(&risk_header));
+    let risk_details = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    risk_disclosure.set_child(Some(&risk_details));
+    risk_card.append(&risk_disclosure);
+    let risk_rows = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    risk_details.append(&risk_rows);
+    let risk_missing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let missing_note = text("Lookalike checks are off · no local ranking list", "footer");
+    missing_note.set_hexpand(true);
+    risk_missing.append(&missing_note);
+    let download_lists = gtk::Button::with_label("Download lists…");
+    download_lists.add_css_class("route");
+    download_lists.add_css_class("compact");
+    risk_missing.append(&download_lists);
+    risk_missing.set_visible(false);
+    risk_details.append(&risk_missing);
+    risk_details.append(&text(
+        "Checked on this device · expand a row for evidence and what to do",
+        "footer",
+    ));
+    body.append(&risk_card);
+    let risk_view = RiskView {
+        disclosure: risk_disclosure,
+        available: Rc::new(Cell::new(false)),
+        summary: risk_summary,
+        rows: risk_rows,
+        missing: risk_missing,
+        shield: shield.clone(),
+        factors: Rc::new(RefCell::new(Vec::new())),
+        finished: Rc::new(Cell::new(false)),
+        complete: Rc::new(Cell::new(false)),
+    };
+    // Generation + latest facts, so a list update never replaces newer factors.
+    let last_facts = Arc::new(std::sync::Mutex::new((
+        0u64,
+        None::<browser_relay::risk::Facts>,
+    )));
 
     let grid = gtk::Grid::builder()
         .column_spacing(12)
@@ -729,6 +976,14 @@ pub fn show(
     update_lists.set_tooltip_text(Some("Update Tranco + OISD · review download privacy first"));
     heading.append(&update_lists);
     online.append(&heading);
+    let weak_update = update_lists.downgrade();
+    download_lists.connect_clicked(move |_| {
+        if let Some(button) = weak_update.upgrade() {
+            // Focus scrolls the list card into view so the popover is anchored visibly.
+            button.grab_focus();
+            button.popup();
+        }
+    });
     let list_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     list_row.set_homogeneous(true);
     let (rank_tile, rank_state, rank_caption) =
@@ -786,6 +1041,9 @@ pub fn show(
     let view = insights_view.clone();
     let log_copy = log.downgrade();
     let displayed_hosts = checked_hosts.clone();
+    let facts_for_update = last_facts.clone();
+    let view_for_update = risk_view.clone();
+    let current_facts = last_facts.clone();
     confirmed_task(
         &update_lists,
         "Download Tranco’s top million including subdomains from tranco-list.eu, plus OISD Big and NSFW from big.oisd.nl and nsfw.oisd.nl? These fixed downloads share your connection IP, but never the inspected hostname or URL. Lists stay on this device; updates are manual.",
@@ -796,13 +1054,23 @@ pub fn show(
             // Copy the short route before loading indexes; GTK never waits for
             // cache validation while acquiring this shared mutex.
             let names = hosts.lock().unwrap().clone();
-            Ok((crate::reputation::check(&names), names, message, failed))
+            let (generation, facts) = facts_for_update.lock().unwrap().clone();
+            let risk = facts
+                .as_ref()
+                .map(|facts| (generation, crate::tranco::risk(facts)));
+            Ok((
+                crate::reputation::check(&names),
+                names,
+                message,
+                failed,
+                risk,
+            ))
         },
         move |state| match state {
             LookupState::Running => view.note.set_text("Updating…"),
             LookupState::Complete(result) => {
                 let detail = match result {
-                    Ok((report, names, message, failed)) => {
+                    Ok((report, names, message, failed, risk)) => {
                         // A redirect may have changed the dashboard while the
                         // update finished. Never replace it with an earlier host.
                         if *displayed_hosts.lock().unwrap() == names {
@@ -814,6 +1082,11 @@ pub fn show(
                         if failed {
                             view.note.set_text("Update incomplete");
                             view.note.set_tooltip_text(Some(&message));
+                        }
+                        if let Some((generation, (factors, lookalikes))) = risk
+                            && current_facts.lock().unwrap().0 == generation
+                        {
+                            view_for_update.update(factors, lookalikes);
                         }
                         format!("{message}\n\n{}", report.detail())
                     }
@@ -865,13 +1138,18 @@ pub fn show(
     close.add_css_class("route");
     close.add_css_class("compact");
     footer.append(&close);
-    body.append(&footer);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .vexpand(true)
         .child(&body)
         .build();
-    popup.set_child(Some(&scroll));
+    // Pinned below the scrolled report so its actions stay visible at any height.
+    footer.add_css_class("inspector-footer");
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    frame.append(&scroll);
+    frame.append(&footer);
+    popup.set_child(Some(&frame));
 
     let peer_view = PeerView {
         flag: flag_label,
@@ -924,8 +1202,10 @@ pub fn show(
         }
     });
     let flag = cancel.clone();
+    let close_factors = risk_view.factors.clone();
     popup.connect_close_request(move |_| {
         flag.store(true, Ordering::Relaxed);
+        on_close(&close_factors.borrow());
         glib::Propagation::Proceed
     });
     let flag = cancel.clone();
@@ -1037,6 +1317,7 @@ pub fn show(
                     complete,
                 }) => {
                     route_complete = complete;
+                    risk_view.complete.set(complete);
                     let (label, class) = assessment_style(encrypted, complete);
                     tls.set_text(label);
                     tls.remove_css_class("success");
@@ -1149,6 +1430,7 @@ pub fn show(
                     button.set_popover(Some(&popover(&content)));
                     spinner.stop();
                     status.set_text("Waiting for consent");
+                    risk_view.finish(false);
                     let consent = consent_sender.clone();
                     let weak_button = button.downgrade();
                     confirm.connect_clicked(move |confirm| {
@@ -1165,6 +1447,7 @@ pub fn show(
                 }
                 Ok(Event::Resumed) => {
                     banner.set_reveal_child(false);
+                    risk_view.resume();
                     spinner.set_visible(true);
                     spinner.start();
                     status.set_text("Checking…");
@@ -1175,8 +1458,19 @@ pub fn show(
                     *checked_hosts.lock().unwrap() = names;
                     insights_view.render(&report);
                 }
+                Ok(Event::Risk {
+                    facts,
+                    factors,
+                    lookalikes,
+                }) => {
+                    let mut latest = last_facts.lock().unwrap();
+                    *latest = (latest.0 + 1, Some(facts));
+                    drop(latest);
+                    risk_view.update(factors, lookalikes);
+                }
                 Ok(Event::Done) => {
                     done.set(true);
+                    risk_view.finish(route_complete);
                     spinner.stop();
                     spinner.set_visible(false);
                     status.set_text(if route_complete {
@@ -1197,6 +1491,7 @@ pub fn show(
                 Err(_) => {
                     spinner.stop();
                     status.set_text("Checks stopped");
+                    risk_view.finish(false);
                     return glib::ControlFlow::Break;
                 }
             }
@@ -1209,6 +1504,115 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expander_ui_carries_an_escaped_accessible_label() {
+        let ui = expander_ui("Warning: a<b> & \"c\"");
+        assert!(ui.contains(
+            "<property name=\"label\">Warning: a&lt;b&gt; &amp; &quot;c&quot;</property>"
+        ));
+        assert!(ui.contains("class=\"GtkExpander\""));
+    }
+
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn rebuilding_risk_rows_keeps_focus_and_expansion() {
+        use browser_relay::risk::{Factor, Severity};
+        gtk::init().unwrap();
+        let factor = |id, title: &str| Factor {
+            id,
+            severity: Severity::Notice,
+            title: title.into(),
+            evidence: "Evidence.".into(),
+            compare: None,
+        };
+        let rows = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let view = RiskView {
+            disclosure: gtk::Expander::new(None),
+            available: Rc::new(Cell::new(true)),
+            summary: text("", "dashboard-value"),
+            rows: rows.clone(),
+            missing: gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            shield: gtk::Image::new(),
+            factors: Rc::new(RefCell::new(Vec::new())),
+            finished: Rc::new(Cell::new(false)),
+            complete: Rc::new(Cell::new(false)),
+        };
+        let window = gtk::Window::new();
+        window.set_child(Some(&rows));
+        window.present();
+        view.update(vec![factor("a", "First"), factor("b", "Second")], true);
+        let second = rows.last_child().unwrap();
+        second
+            .downcast_ref::<gtk::Expander>()
+            .unwrap()
+            .set_expanded(true);
+        assert!(second.grab_focus());
+        view.update(
+            vec![
+                factor("a", "First"),
+                factor("b", "Second"),
+                factor("c", "Third"),
+            ],
+            true,
+        );
+        let rebuilt = rows.first_child().unwrap().next_sibling().unwrap();
+        assert_ne!(rebuilt, second, "rows are rebuilt");
+        assert!(
+            rebuilt
+                .downcast_ref::<gtk::Expander>()
+                .unwrap()
+                .is_expanded()
+        );
+        let focus = GtkWindowExt::focus(&window).expect("focus kept");
+        assert!(focus == rebuilt || focus.is_ancestor(&rebuilt));
+        assert!(!view.disclosure.is_expanded(), "notices stay compact");
+        let mut warning = factor("warning", "Lookalike");
+        warning.severity = Severity::Warning;
+        view.update(vec![warning.clone()], true);
+        assert!(
+            view.disclosure.is_expanded(),
+            "new warnings open the evidence"
+        );
+        view.disclosure.set_expanded(false);
+        view.update(vec![warning.clone()], true);
+        assert!(
+            !view.disclosure.is_expanded(),
+            "repeated results respect a manual collapse"
+        );
+        warning.title = "Another lookalike".into();
+        view.update(vec![warning], true);
+        assert!(
+            view.disclosure.is_expanded(),
+            "a new warning remains visible"
+        );
+        window.destroy();
+    }
+
+    #[test]
+    fn severity_is_never_colour_alone() {
+        use browser_relay::risk::Severity;
+        for severity in [Severity::Warning, Severity::Caution, Severity::Notice] {
+            let (icon, class) = severity_style(severity);
+            assert!(icon.ends_with("-symbolic"));
+            assert!(class.starts_with("risk-"));
+            assert!(!severity.word().is_empty());
+        }
+    }
+
+    #[test]
+    fn comparison_highlights_only_the_difference_and_escapes_markup() {
+        let markup = comparison_markup("paypa1.com", "paypal.com");
+        assert!(markup.contains("paypa<span"));
+        assert!(markup.contains(">1</span>.com"));
+        assert!(markup.contains(">l</span>.com"));
+        assert!(markup.starts_with("This link   "));
+        let hostile = comparison_markup("a<b>.com", "a&b.com");
+        assert!(
+            !hostile.contains("<b>") && hostile.contains("&lt;b&gt;") && hostile.contains("&amp;")
+        );
+        gtk::pango::parse_markup(&hostile, '\0').expect("valid Pango markup");
+    }
     #[test]
     #[ignore = "GTK PATH fallback fixture: set RELAY_BROWSER_CAPTURE and prepend a fake chromium to PATH"]
     fn reputation_without_discovery_uses_path_browser() {

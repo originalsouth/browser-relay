@@ -6,6 +6,8 @@ pub struct CertificateInfo {
     pub subject: String,
     pub issuer: String,
     pub detail: String,
+    pub not_before: i64,
+    pub not_after: i64,
 }
 
 pub fn certificate_info(der: &[u8]) -> Result<CertificateInfo> {
@@ -83,12 +85,19 @@ pub fn certificate_info(der: &[u8]) -> Result<CertificateInfo> {
         subject,
         issuer,
         detail,
+        not_before: cert.validity().not_before.timestamp(),
+        not_after: cert.validity().not_after.timestamp(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validity_is_exposed_as_unix_seconds() {
+        let cert = certificate_info(include_bytes!("../tests/fixtures/certificate.der")).unwrap();
+        assert!(cert.not_before > 0 && cert.not_after > cert.not_before);
+    }
     #[test]
     fn certificate_identity_does_not_emit_bidi_overrides() {
         // Alter UTF-8 name values without changing DER lengths. Parsing identity

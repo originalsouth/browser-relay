@@ -6,10 +6,12 @@ pub mod display_text;
 pub mod geo;
 pub mod insights;
 pub mod registration;
+pub mod risk;
 pub mod route;
 pub type Cancel = std::sync::Arc<std::sync::atomic::AtomicBool>;
 pub mod domain_list;
 pub mod link;
+pub mod lookalike;
 #[cfg(feature = "mobile")]
 mod mobile;
 pub mod qr;

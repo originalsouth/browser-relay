@@ -51,6 +51,11 @@ pub enum Event {
     Redirect(String),
     Resumed,
     Insights(crate::reputation::Report, Vec<String>),
+    Risk {
+        facts: browser_relay::risk::Facts,
+        factors: Vec<browser_relay::risk::Factor>,
+        lookalikes: bool,
+    },
     Done,
 }
 
@@ -102,6 +107,19 @@ pub(crate) fn run_async<T>(cancel: &Cancel, future: impl Future<Output = Result<
 
 fn section(sender: &Sender<Event>, title: &str, detail: impl Into<String>) {
     let _ = sender.send(Event::Section(title.into(), detail.into()));
+}
+
+fn send_risk(
+    sender: &Sender<Event>,
+    facts: &browser_relay::risk::Facts,
+) -> Vec<browser_relay::risk::Factor> {
+    let (factors, lookalikes) = crate::tranco::risk(facts);
+    let _ = sender.send(Event::Risk {
+        facts: facts.clone(),
+        factors: factors.clone(),
+        lookalikes,
+    });
+    factors
 }
 
 #[cfg(test)]
@@ -203,6 +221,8 @@ pub(crate) fn proxy_configured() -> bool {
 
 async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<()>>) -> Result<()> {
     let mut route = Route::new(link)?;
+    let mut facts = browser_relay::risk::Facts::new(target(link)?);
+    let mut factors = send_risk(sender, &facts);
     let proxied = proxy_configured();
     if proxied {
         section(
@@ -221,6 +241,12 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                 break;
             }
         };
+        facts.hops.push(browser_relay::risk::Hop {
+            url: url.clone(),
+            status: None,
+            validity: None,
+        });
+        factors = send_risk(sender, &facts);
         let name = host(&url);
         if route.names.len() != previous_hosts {
             let report = crate::reputation::check(&route.names);
@@ -316,6 +342,19 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                     .unwrap_or_else(|e| e.clone()),
             );
         }
+        let hop = facts
+            .hops
+            .last_mut()
+            .expect("request recorded before transport");
+        hop.status = Some(status.as_u16());
+        hop.validity = certificate
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|info| browser_relay::risk::Validity {
+                not_before: info.not_before,
+                not_after: info.not_after,
+            });
+        factors = send_risk(sender, &facts);
         let _ = sender.send(Event::Connection {
             url: url.to_string(),
             secure,
@@ -398,6 +437,11 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
         } else {
             "The route was incomplete (at most six requests) or included unencrypted HTTP. Site trust is unknown."
         },
+    );
+    section(
+        sender,
+        "Risk factors",
+        browser_relay::risk::detail(&factors),
     );
     let mut peers: Vec<_> = peers.into_iter().collect();
     peers.sort();
@@ -777,6 +821,65 @@ mod tests {
         );
         assert!(!events.iter().any(|e| matches!(e, Event::Redirect(_))));
         assert_eq!(server.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn risk_factors_are_sent_before_and_after_each_hop() {
+        let (base, server) = server("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n", 1);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        run(&format!("{base}/"), &sender, &cancel);
+        server.join().unwrap();
+        let risks: Vec<_> = receiver
+            .try_iter()
+            .filter_map(|event| match event {
+                Event::Risk { facts, factors, .. } => Some((facts.hops.len(), factors)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            risks.first().unwrap().0,
+            0,
+            "URL-only factors arrive before contact"
+        );
+        let (hops, last) = risks.last().unwrap();
+        assert_eq!(*hops, 1);
+        assert!(last.iter().any(|f| f.id == "refused"));
+        assert!(last.iter().any(|f| f.id == "local-address"));
+    }
+
+    #[test]
+    fn failed_redirect_destination_is_assessed_before_a_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (base, server) = server_replies(listener, vec![
+            "HTTP/1.1 302 Found\r\nLocation: /broken?next=https://example.org/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+            // Close without a response, as a failed destination would.
+            String::new(),
+        ]);
+        let (sender, receiver) = mpsc::channel();
+        run(&base, &sender, &Arc::new(AtomicBool::new(false)));
+        assert_eq!(server.join().unwrap().len(), 2);
+        let events: Vec<_> = receiver.try_iter().collect();
+        let (facts, factors) = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::Risk { facts, factors, .. } => Some((facts, factors)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(facts.hops.len(), 2);
+        assert_eq!(facts.hops[0].status, Some(302));
+        assert_eq!(facts.hops[1].status, None);
+        assert!(factors.iter().any(|f| f.id == "embedded-destination"));
+        assert!(!factors.iter().any(|f| f.id == "refused"));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::Assessment {
+                complete: false,
+                ..
+            }
+        )));
     }
 
     #[test]

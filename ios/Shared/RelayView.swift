@@ -78,6 +78,9 @@ struct RelayView: View {
                         .buttonStyle(.borderedProminent).tint(violet).disabled(inspection.busy)
                 }.padding(16).background(panel, in: RoundedRectangle(cornerRadius: 18))
             }
+            if let risk = inspection.risk {
+                RiskPanel(risk: risk, tint: riskColor(risk.highest))
+            }
             if let local = inspection.insights {
                 HStack(alignment: .top, spacing: 10) {
                     info("OISD · Blocklist", listState(local.oisd.big, adult: false),
@@ -160,6 +163,14 @@ struct RelayView: View {
         guard let matched else { return .secondary }
         return matched ? (adult ? Color(red: 1, green: 194/255, blue: 125/255) : Color(red: 1, green: 137/255, blue: 149/255)) : Color(red: 140/255, green: 221/255, blue: 165/255)
     }
+    private func riskColor(_ severity: String?) -> Color {
+        switch severity {
+        case "warning": return Color(red: 1, green: 137/255, blue: 149/255)
+        case "caution": return Color(red: 1, green: 194/255, blue: 125/255)
+        case "notice": return Color(red: 222/255, green: 203/255, blue: 1)
+        default: return .secondary
+        }
+    }
     private func rankColor(_ rgb: [Double]?) -> Color {
         guard let rgb, rgb.count == 3 else { return .secondary }
         return Color(red: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255)
@@ -210,5 +221,85 @@ struct QRView: View {
             }.padding(28).navigationTitle("Show QR code").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)
+    }
+}
+
+struct RiskPanel: View {
+    let risk: RiskReport
+    let tint: Color
+    @State private var open: Set<String> = []
+    @State private var seen: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Risk factors", systemImage: risk.highest == "warning" ? "exclamationmark.octagon.fill" : "list.bullet.rectangle")
+                .font(.subheadline.bold()).foregroundStyle(tint)
+            Text(risk.summary).font(.headline).foregroundStyle(tint)
+            ForEach(risk.factors, id: \.self) { factor in
+                DisclosureGroup(isExpanded: binding(factor)) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let compare = factor.compare {
+                            Text(highlighted("This link   ", compare.shown, compare.shownSpan)).font(.body.monospaced())
+                            Text(highlighted("Looks like  ", compare.brand, compare.brandSpan)).font(.body.monospaced())
+                        }
+                        Text(factor.evidence).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(factor.title, systemImage: symbol(factor.severity)).font(.callout)
+                        Spacer(minLength: 8)
+                        Text(factor.word).font(.caption.bold()).foregroundStyle(severityColor(factor.severity))
+                    }
+                }
+                .accessibilityLabel("\(factor.word): \(factor.title)")
+            }
+            if !risk.lookalikes {
+                Text(risk.unavailable ?? "Lookalike checks are off. Download the ranking list in the app's Data screen.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Checked on this device. Finding none does not mean a site is safe.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        .background(Color(red: 33/255, green: 30/255, blue: 43/255), in: RoundedRectangle(cornerRadius: 18))
+        .onAppear(perform: seed).onChange(of: risk.factors) { _, _ in seed() }
+    }
+
+    private func key(_ f: RiskReport.Factor) -> String { f.id + "\u{1f}" + f.title }
+    private func seed() {
+        for f in risk.factors where seen.insert(key(f)).inserted && f.severity == "warning" { open.insert(key(f)) }
+    }
+    private func binding(_ f: RiskReport.Factor) -> Binding<Bool> {
+        Binding(get: { open.contains(key(f)) }, set: { isOpen in
+            if isOpen { open.insert(key(f)) } else { open.remove(key(f)) }
+        })
+    }
+    private func severityColor(_ severity: String) -> Color {
+        switch severity {
+        case "warning": return Color(red: 1, green: 137/255, blue: 149/255)
+        case "caution": return Color(red: 1, green: 194/255, blue: 125/255)
+        default: return Color(red: 222/255, green: 203/255, blue: 1)
+        }
+    }
+    private func symbol(_ severity: String) -> String {
+        switch severity {
+        case "warning": return "exclamationmark.octagon.fill"
+        case "caution": return "exclamationmark.triangle.fill"
+        default: return "info.circle"
+        }
+    }
+    private func highlighted(_ lead: String, _ value: String, _ span: [Int]) -> AttributedString {
+        let scalars = Array(value.unicodeScalars)
+        let prefix = min(max(span.first ?? 0, 0), scalars.count)
+        let end = max(prefix, min(max(scalars.count - (span.last ?? 0), 0), scalars.count))
+        func text(_ slice: ArraySlice<Unicode.Scalar>) -> String { String(String.UnicodeScalarView(slice)) }
+        var out = AttributedString(lead + text(scalars[..<prefix]))
+        var diff = AttributedString(text(scalars[prefix..<end]))
+        diff.foregroundColor = Color(red: 1, green: 194/255, blue: 125/255)
+        diff.underlineStyle = Text.LineStyle.single
+        diff.inlinePresentationIntent = .stronglyEmphasized
+        out += diff
+        out += AttributedString(text(scalars[end...]))
+        return out
     }
 }

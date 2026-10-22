@@ -23,9 +23,14 @@ entry and a Plasma desktop shortcut too.
 
 ## A peek before you click
 
-The inspector brings certificates, redirects, server location and ping charts
-into one window. Local **Tranco** rankings and **OISD** blocklists add context,
-including subdomains. Want more? WHOIS/RDAP, VirusTotal and online GeoIP are opt-in.
+A familiar-looking address can hide a different destination. **Risk factors**
+flag lookalike domains, misleading brand names, fresh certificates and unexpected
+redirects. Warnings open up front; expand any finding for the evidence, highlighted
+spelling differences and what to check. All assessed on your device.
+
+Certificates, server location and ping charts share one compact dashboard. Local
+**Tranco** rankings and **OISD** blocklists add context, including subdomains.
+Want more? WHOIS/RDAP, VirusTotal and online GeoIP are opt-in.
 
 ![Inspecting the Browser Relay repository](assets/inspection.png)
 
@@ -62,7 +67,7 @@ GeoIP uses a local MMDB database. Point `BROWSER_RELAY_GEOIP_DB` at yours;
 [setup, data sources and developer notes](docs/reference.md) cover the rest.
 
 An **iOS companion is in development**, with native browsing, Share-menu inspection
-and the same Rust core. It still needs testing on a Mac and device.
+and the same Rust risk checks. It still needs testing on a Mac and device.
 [Build notes and default-browser support →](docs/ios.md)
 
 [MIT licensed](LICENSE). For people who use more than one browser.

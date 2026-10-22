@@ -549,6 +549,7 @@ fn populate(
             }
             routes.set_sensitive(false);
             status.remove_css_class("error");
+            status.remove_css_class("risk-warning");
             status.set_text(if action == Action::Copy {
                 "Copying…"
             } else {
@@ -617,10 +618,39 @@ fn populate(
     ));
     let weak_window = window.downgrade();
     let inspect_link = urls[0].clone();
+    let inspect_status = status.downgrade();
+    let footer_text = status.text().to_string();
+    let carried_note = Rc::new(Cell::new(false));
     inspect_button.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
-            crate::inspector_ui::show(&window, &inspect_link, multiple, inspection_browser.clone());
+        let (Some(window), Some(status)) = (weak_window.upgrade(), inspect_status.upgrade()) else {
+            return;
+        };
+        // A new inspection supersedes any note carried over from an earlier one.
+        if carried_note.replace(false) {
+            status.remove_css_class("risk-warning");
+            status.remove_css_class("error");
+            status.set_text(&footer_text);
         }
+        let weak_status = inspect_status.clone();
+        let carried_note = carried_note.clone();
+        crate::inspector_ui::show(
+            &window,
+            &inspect_link,
+            multiple,
+            inspection_browser.clone(),
+            move |factors| {
+                let Some(status) = weak_status.upgrade() else {
+                    return;
+                };
+                if let Some(note) = browser_relay::risk::chooser_note(factors) {
+                    status.remove_css_class("error");
+                    status.remove_css_class("success");
+                    status.set_text(&note);
+                    status.add_css_class("risk-warning");
+                    carried_note.set(true);
+                }
+            },
+        );
     });
     routes.append(&inspect_button);
     buttons.push(inspect_button);

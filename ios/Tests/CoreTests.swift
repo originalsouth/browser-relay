@@ -34,6 +34,28 @@ final class CoreTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedRedirectStillReportsTheAttemptedPort() async throws {
+        let model = InspectionModel(transfer: { url in
+            if url.port == 8443 { throw RelayError("TLS fixture failed") }
+            return TransferResult(status: 302, location: "https://example.org:8443/", milliseconds: 1, peer: nil, certificate: nil)
+        })
+        model.start("https://example.org/")
+        for _ in 0..<300 {
+            if !model.busy { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.decision?.action, "consent")
+        model.continueRedirect()
+        for _ in 0..<300 {
+            if model.message == "TLS fixture failed", model.risk?.summary.contains("route incomplete") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.hops.count, 1)
+        XCTAssertTrue(model.risk?.factors.contains(where: { $0.id == "unusual-port" && $0.title.contains("8443") }) == true)
+        XCTAssertTrue(model.risk?.summary.contains("route incomplete") == true)
+    }
+
+    @MainActor
     func testCancelledQueuedStartsDoNotConsumeRouteSlots() async throws {
         let model = InspectionModel()
         let sentinel: RouteDecision = try Core.call(["op": "route_start", "url": "https://github.com/originalsouth/browser-relay"])
@@ -117,5 +139,15 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(code.modules.count, code.width * code.width)
         XCTAssertGreaterThanOrEqual(code.quietZone, 4)
         XCTAssertThrowsError(try Core.call(["op": "qr", "url": String(repeating: "x", count: 107)]) as QR)
+    }
+
+    func testRiskOpRejectsTooManyHops() throws {
+        let hop: [String: Any] = ["url": "https://example.org/", "status": 200]
+        XCTAssertThrowsError(try Core.call(["op": "risk", "directory": NSTemporaryDirectory(), "link": "https://example.org/", "hops": Array(repeating: hop, count: 7)]) as RiskReport)
+    }
+    func testRiskSummaryNeverClaimsSafety() throws {
+        let report: RiskReport = try Core.call(["op": "risk", "directory": NSTemporaryDirectory(), "link": "https://example.org/", "hops": [], "finished": true, "complete": true])
+        XCTAssertEqual(report.summary, "No risk factors found · trust unknown")
+        XCTAssertFalse(report.lookalikes)
     }
 }

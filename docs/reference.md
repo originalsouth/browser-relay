@@ -83,6 +83,101 @@ Data is downloaded separately under [OISD's GPL-3.0 license](https://github.com/
 and [Tranco's source data terms](https://tranco-list.eu/), with source dates and
 attribution preserved. Neither dataset is bundled with the app.
 
+### Risk factors
+
+The **Risk factors** card shows a compact summary under the URL banner, above
+the connection grid. Expand it for the evidence; new warnings open it automatically.
+Factors are computed on your device from each attempted URL and the local Tranco
+index, before DNS or TLS can fail. Redirect targets are checked only after any
+required consent. There is no score, and **none found is not safety**. Each factor
+is an expandable row with a severity icon, title and word (`Warning`, `Caution`,
+`Notice`), so colour is never the only cue. Warning rows start expanded, the rest
+collapsed, and rows you toggle stay as you left them while later hops arrive. Lookalike and near-miss rows show
+the link beside the brand with the differing characters highlighted; an IDN is
+shown in Unicode with its punycode in the evidence. When any warning exists, the
+title shield switches to a warning icon.
+
+| State | Summary |
+| --- | --- |
+| Before the first result | `Checking the route…` |
+| Running, no factors | `Nothing found yet · checking` |
+| Running, factors | `1 warning · checking` |
+| Finished, route incomplete | `1 warning · route incomplete` or `None in the route so far · trust unknown` |
+| Finished, complete, none | `No risk factors found · trust unknown` |
+| Finished, complete, factors | `2 warnings · 1 caution` |
+
+| Id | Severity | Meaning |
+| --- | --- | --- |
+| `lookalike` | Warning | Spelled differently but reads like a top-ranked brand on another domain (TR39 skeleton match) |
+| `brand-elsewhere` | Warning | A brand's full address inside another name (`paypal.com.evil.top`), or its name as a hyphenated part of the registered name (`paypal-login.xyz`) |
+| `brand-subdomain` | Caution | A brand's name only as a subdomain word of another domain (`gitlab.acme.de`) |
+| `near-brand` | Caution | One edit or swap from a brand's name |
+| `ip-host` | Caution | Bare public IP instead of a domain name |
+| `plain-http` | Caution (Notice if local) | Unencrypted connection |
+| `new-certificate` | Caution under 2 days, Notice under 7 | Certificate recently issued |
+| `same-name` | Notice | Exactly a brand's name under another ending (`paypal.xyz` for `paypal.com`) |
+| `local-address` | Notice | Private, loopback or non-public name |
+| `unusual-port` | Notice | Port other than 80 and 443 |
+| `shortener` | Notice | Known link shortener |
+| `embedded-destination` | Notice | A query parameter holds another web address |
+| `cross-site` | Notice | A redirect hands you to a different site |
+| `refused` | Notice | The server refused the check, so its content was not observed |
+
+Each row's evidence says why it matters, then what to do. Local destinations get
+the gentler `Notice` wording rather than public-internet alarms.
+
+Lookalikes use the Unicode TR39 confusable skeleton
+([`unicode-security`](https://crates.io/crates/unicode-security)). A **brand** is
+a site in the Tranco top 10,000; only the top 500 are searched for
+inside other names (the name must be at least six letters), lookalike matching needs at least four letters, and near-miss matching needs seven or more.
+Website boundaries include private hosting suffixes: `alice.github.io` and
+`bob.github.io` are separate sites. A destination whose own site ranks in the
+top 100,000 is **established** and is never flagged as a lookalike; a hosting
+provider's rank gives its tenants no exemption. Certificates valid for ten
+days or less (six-day ACME profiles) are ignored for age, since they are always
+young. Factors need no network access and no extra requests.
+
+Without a Tranco index the card ends with `Lookalike checks are off · no local
+ranking list` and a **Download lists…** button that opens the usual confirmation;
+factors recompute after the update. When the inspector closes with any warning or
+caution, the chooser's status line carries it over (for example `Inspection: ⚠
+paypa1.com imitates paypal.com (+1 more)`); notices alone leave it untouched.
+
+Historical baseline, before the private-hosting boundary fix; these rates need
+re-measuring for the current detector. Measured offline on 2026-10-19 with Tranco list `Q2Y54` (2026-10-14). Benign is
+every 20th Tranco hostname ranked beyond 100,000 (44,987 URLs); phish is
+Phishing.Database's active links (789,054 URLs, parsed as text and never
+contacted). Share of URLs with each URL-only factor:
+
+| Factor | Benign | Phishing |
+| --- | --- | --- |
+| `lookalike` | 0.01% | 0.03% |
+| `brand-elsewhere` | 0.07% | 0.96% |
+| `brand-subdomain` | 0.03% | 1.02% |
+| `near-brand` | 0.40% | 0.46% |
+| Any of those four | 0.51% | 2.47% |
+| `same-name` | 0.92% | 1.33% |
+| `local-address` | 1.83% | 0.08% |
+| `ip-host` | not measured (hostnames only) | 1.16% |
+| `embedded-destination` | 0.00% | 0.28% |
+| `unusual-port` | 0.00% | 0.17% |
+| `shortener` | 0.00% | 0.00% |
+
+`same-name` is a Notice because the same name on another ending is often
+legitimate (`gitlab.org`, `sony.es`); attackers also use it, so check the address.
+`brand-subdomain` is a Caution for the same reason: self-hosted services name
+their subdomains after the product (`gitlab.`, `outlook.`, `sentry.`), so a bare
+subdomain word is weaker evidence than a brand's whole address (`paypal.com.`)
+spelled out in front of someone else's domain, which stays a Warning.
+
+The lookalike-family rate (0.51%, the four factors above) is marginally above the
+0.5% target, within sampling error at this sample size; the two Warnings among
+them (`lookalike` and `brand-elsewhere`) fire on 0.08% of benign URLs. "Benign" means Tranco-ranked hostnames beyond #100,000,
+not real user links, which is why `local-address` appears there.
+Re-run with
+`cargo test --release --lib evaluate_url_only_factors -- --ignored --nocapture`
+(set `BROWSER_RELAY_TRANCO_DIR` and `RISK_EVAL_PHISH`).
+
 ### Optional online checks and WHOIS
 
 **WHOIS / RDAP**, **VirusTotal**, and **Online GeoIP** are opt-in. Each button

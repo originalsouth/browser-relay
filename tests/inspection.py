@@ -1,10 +1,15 @@
 """Local TLS/redirect GUI regressions. Needs openssl, tesseract, xdotool, ImageMagick.
 Run: xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
+Set RELAY_SCREENSHOTS=<dir> to keep the before/after captures for review.
 No external destinations or third-party lookup services are contacted.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import os
+import csv
+import io
+import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -47,6 +52,9 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
     env = dict(os.environ, GDK_BACKEND='x11', GSK_RENDERER='cairo', GTK_A11Y='none', SSL_CERT_FILE=str(ca), BROWSER_RELAY_OISD_DIR=str(folder))
     for name in ('WAYLAND_DISPLAY','BROWSER_RELAY_DIALOG','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
         env.pop(name, None)
+    shots = os.environ.get('RELAY_SCREENSHOTS')
+    if shots:
+        Path(shots).mkdir(parents=True, exist_ok=True)
     requests = []
     class SecureHandler(BaseHTTPRequestHandler):
         def do_HEAD(self):
@@ -84,6 +92,19 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
             before = capture_text(popup,folder/'before.png')
             assert 'Inspection incomplete' in before, before
             assert 'Verified HTTPS' not in before, before
+            assert 'RISK FACTORS' in before, before
+            assert 'Local network address' not in before, 'Routine notices should start collapsed'
+            data = command('tesseract', str(folder/'before.png'), 'stdout', 'tsv')
+            row = next(row for row in csv.DictReader(io.StringIO(data), delimiter='\t') if row['text'] == 'RISK')
+            risk_y = int(row['top']) + int(row['height']) // 2
+            command('xdotool', 'mousemove', '--window', popup, '150', str(risk_y), 'click', '1')
+            time.sleep(.2)
+            evidence = capture_text(popup, folder/'evidence.png')
+            assert 'Local network address' in evidence, evidence
+            assert 'Details & privacy' in evidence, evidence
+            command('xdotool', 'mousemove', '--window', popup, '150', str(risk_y), 'click', '1')
+            time.sleep(.2)
+            assert not re.search(r'\bsafe\b', before, re.I), before
             if follows_redirect:
                 assert '/final' not in requests, 'Destination contacted before consent'
                 command('xdotool','mousemove','--window',popup,'650','135','click','1')
@@ -96,6 +117,10 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
                 assert requests.count('/final') == 1
             else:
                 assert requests == ['/start','/broken'], requests
+            if shots:
+                for name in ('before.png', 'after.png'):
+                    if (folder/name).exists():
+                        shutil.copy(folder/name, Path(shots)/f"{'redirect' if follows_redirect else 'tls'}-{name}")
             key('Escape')
             command('xdotool','windowfocus','--sync',parent)
             key('Escape')

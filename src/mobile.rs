@@ -44,7 +44,7 @@ fn reserve_route(routes: &mut HashMap<u64, RouteEntry>) {
     }
 }
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-// A single decoded index and validation scratch fit inside this allowance.
+// A decoded index, validation scratch and any derived lookalike index share this allowance.
 // Serialize memory-heavy local operations; never retain indexes in the extension.
 const INDEX_MEMORY: usize = 32 * 1024 * 1024;
 const READ_BUFFER: usize = 64 * 1024;
@@ -142,6 +142,93 @@ fn local_insights(root: &Path, names: &[String]) -> Value {
     };
     json!({"oisd":oisd,"tranco":tranco})
 }
+#[derive(Default)]
+struct RiskCache {
+    stamp: Option<(PathBuf, u64, u64, std::time::SystemTime)>,
+    names: Vec<String>,
+    factors: Vec<crate::risk::Factor>,
+    available: bool,
+    error: Option<String>,
+    #[cfg(test)]
+    loads: usize,
+}
+static RISK_CACHE: Mutex<RiskCache> = Mutex::new(RiskCache {
+    stamp: None,
+    names: Vec::new(),
+    factors: Vec::new(),
+    available: false,
+    error: None,
+    #[cfg(test)]
+    loads: 0,
+});
+fn cached_lookalikes(
+    root: &Path,
+    facts: &crate::risk::Facts,
+    cached: &mut RiskCache,
+) -> (Vec<crate::risk::Factor>, bool, Option<String>) {
+    use std::os::unix::fs::MetadataExt;
+    let path = root.join("tranco.bin");
+    let stamp = fs::metadata(&path)
+        .ok()
+        .and_then(|m| Some((path.clone(), m.ino(), m.len(), m.modified().ok()?)));
+    let mut names: Vec<_> = std::iter::once(&facts.link)
+        .chain(facts.hops.iter().map(|h| &h.url))
+        .map(crate::link::host)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    if cached.stamp != stamp || cached.names != names {
+        #[cfg(test)]
+        {
+            cached.loads += 1;
+        }
+        let result = read_index(&path, Rankings::read_bounded).and_then(|db| {
+            let brands = crate::lookalike::BrandIndex::build_bounded(
+                &db,
+                INDEX_MEMORY.saturating_sub(db.storage_bytes()),
+            )?;
+            Ok(crate::risk::lookalikes(
+                &names,
+                &crate::risk::Context {
+                    rankings: &db,
+                    brands: &brands,
+                },
+            ))
+        });
+        cached.available = result.is_ok();
+        cached.error = result.as_ref().err().cloned();
+        cached.factors = result.unwrap_or_default();
+        cached.names = names;
+        cached.stamp = stamp;
+    }
+    (
+        cached.factors.clone(),
+        cached.available,
+        cached.error.clone(),
+    )
+}
+fn local_risk(root: &Path, facts: &crate::risk::Facts, finished: bool, complete: bool) -> Value {
+    use crate::risk::{assess, detail, differing_span, summary};
+    let _memory = crate::recover_lock(&LOCAL_WORK);
+    let now = i64::try_from(cache::now()).unwrap_or(i64::MAX);
+    let (host_factors, lookalikes, unavailable) =
+        cached_lookalikes(root, facts, &mut crate::recover_lock(&RISK_CACHE));
+    let mut factors = assess(facts, None, now);
+    factors.extend(host_factors);
+    let factors = crate::risk::ordered(factors);
+    let list: Vec<_> = factors
+        .iter()
+        .map(|f| {
+            let compare = f.compare.as_ref().map(|(shown, brand)| {
+                let (prefix, suffix) = differing_span(shown, brand);
+                json!({"shown":shown,"brand":brand,"shownSpan":[prefix,suffix],"brandSpan":[prefix,suffix]})
+            });
+            json!({"id":f.id,"severity":f.severity.label(),"word":f.severity.word(),"title":f.title,"evidence":f.evidence,"compare":compare})
+        })
+        .collect();
+    let (text, highest) = summary(&factors, finished, complete);
+    json!({"factors":list,"summary":text,"highest":highest.map(|s| s.label()),"lookalikes":lookalikes,"unavailable":unavailable,"detail":detail(&factors)})
+}
 fn request(value: &Value) -> Result<Value> {
     match string(value, "op")? {
         "validate" => {
@@ -173,7 +260,9 @@ fn request(value: &Value) -> Result<Value> {
                 })
                 .collect::<Result<_>>()?;
             let cert = crate::certificate::certificate_info(&bytes)?;
-            Ok(json!({"subject":cert.subject,"issuer":cert.issuer,"detail":cert.detail}))
+            Ok(
+                json!({"subject":cert.subject,"issuer":cert.issuer,"detail":cert.detail,"notBefore":cert.not_before,"notAfter":cert.not_after}),
+            )
         }
         "route_start" => {
             let mut route = Route::new(string(value, "url")?)?;
@@ -253,6 +342,45 @@ fn request(value: &Value) -> Result<Value> {
             Ok(local_insights(
                 Path::new(string(value, "directory")?),
                 &names,
+            ))
+        }
+        "risk" => {
+            use crate::risk::{Facts, Hop, Validity};
+            let hops = value["hops"].as_array().ok_or("Missing hops.")?;
+            if hops.len() > crate::route::MAX_HOPS {
+                return Err("Too many hops.".into());
+            }
+            let mut facts = Facts::new(crate::link::target(string(value, "link")?)?);
+            for hop in hops {
+                facts.hops.push(Hop {
+                    url: crate::link::target(string(hop, "url")?)?,
+                    status: if hop["status"].is_null() {
+                        None
+                    } else {
+                        Some(
+                            hop["status"]
+                                .as_u64()
+                                .and_then(|s| u16::try_from(s).ok())
+                                .filter(|s| (100..=999).contains(s))
+                                .ok_or("Invalid status.")?,
+                        )
+                    },
+                    validity: match (hop["notBefore"].as_i64(), hop["notAfter"].as_i64()) {
+                        (Some(not_before), Some(not_after)) => Some(Validity {
+                            not_before,
+                            not_after,
+                        }),
+                        _ => None,
+                    },
+                });
+            }
+            let finished = value["finished"].as_bool().unwrap_or(false);
+            let complete = value["complete"].as_bool().unwrap_or(false);
+            Ok(local_risk(
+                Path::new(string(value, "directory")?),
+                &facts,
+                finished,
+                complete,
             ))
         }
         "validate_geo" => {
@@ -426,6 +554,87 @@ mod tests {
         assert!(read_index(&path, Rankings::read_bounded).is_ok());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mobile_reuses_host_factors_and_invalidates_replaced_lists() {
+        let root = std::env::temp_dir().join(format!("relay-risk-reuse-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let first = Rankings::parse("1,paypal.com", "TEST", "date", 0).unwrap();
+        fs::write(root.join("tranco.bin"), first.encode()).unwrap();
+        let mut cached = RiskCache::default();
+        let mut facts =
+            crate::risk::Facts::new(crate::link::target("https://paypa1.com/a").unwrap());
+        assert_eq!(
+            cached_lookalikes(&root, &facts, &mut cached).0[0].id,
+            "lookalike"
+        );
+        for status in [None, Some(200), Some(403)] {
+            facts.hops = vec![crate::risk::Hop {
+                url: crate::link::target("https://paypa1.com/b").unwrap(),
+                status,
+                validity: None,
+            }];
+            assert!(cached_lookalikes(&root, &facts, &mut cached).1);
+        }
+        assert_eq!(
+            cached.loads, 1,
+            "same hosts must not reload or rebuild the indexes"
+        );
+        let next = Rankings::parse("1,microsoft.com", "NEW", "date", 0).unwrap();
+        fs::write(root.join("next.bin"), next.encode()).unwrap();
+        fs::rename(root.join("next.bin"), root.join("tranco.bin")).unwrap();
+        assert!(cached_lookalikes(&root, &facts, &mut cached).0.is_empty());
+        assert_eq!(cached.loads, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn risk_op_uses_local_rankings_and_bounds_hops() {
+        let root = std::env::temp_dir().join(format!("relay-mobile-risk-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let ranks = Rankings::parse("1,paypal.com", "TEST", "2026-10-15T00:00:00Z", 1).unwrap();
+        fs::write(root.join("tranco.bin"), ranks.encode()).unwrap();
+        let hop = json!({"url":"https://paypa1.com/","status":200});
+        let report = request(&json!({"op":"risk","directory":root,"link":"https://paypa1.com/","hops":[hop],"finished":true,"complete":true})).unwrap();
+        assert_eq!(report["factors"][0]["id"], "lookalike");
+        assert_eq!(report["factors"][0]["word"], "Warning");
+        assert_eq!(report["factors"][0]["compare"]["shownSpan"], json!([5, 4]));
+        assert_eq!(report["summary"], "1 warning");
+        assert_eq!(report["highest"], "warning");
+        assert_eq!(report["lookalikes"], true);
+        let attempted = request(
+            &json!({"op":"risk","directory":root,"link":"https://example.org/",
+            "hops":[{"url":"https://example.org/","status":302},{"url":"https://paypa1.com:8443/"}],
+            "finished":true,"complete":false}),
+        )
+        .unwrap();
+        let factors = attempted["factors"].as_array().unwrap();
+        assert!(factors.iter().any(|f| f["id"] == "lookalike"));
+        assert!(factors.iter().any(|f| f["id"] == "unusual-port"));
+        assert!(!factors.iter().any(|f| f["id"] == "refused"));
+        assert!(
+            attempted["summary"]
+                .as_str()
+                .unwrap()
+                .contains("route incomplete")
+        );
+        let many = vec![hop; crate::route::MAX_HOPS + 1];
+        assert!(
+            request(
+                &json!({"op":"risk","directory":root,"link":"https://paypa1.com/","hops":many})
+            )
+            .is_err()
+        );
+        let empty =
+            std::env::temp_dir().join(format!("relay-mobile-risk-empty-{}", std::process::id()));
+        fs::create_dir_all(&empty).unwrap();
+        let report =
+            request(&json!({"op":"risk","directory":empty,"link":"https://paypa1.com/","hops":[]}))
+                .unwrap();
+        assert_eq!(report["lookalikes"], false);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(empty).unwrap();
     }
 
     #[test]

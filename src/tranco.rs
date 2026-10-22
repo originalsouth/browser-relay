@@ -6,8 +6,12 @@ use crate::{
     list_cache,
 };
 use browser_relay::insights::TRANCO_METADATA as METADATA;
+use browser_relay::{
+    lookalike::BrandIndex,
+    risk::{self, Context, Factor, Facts},
+};
 use std::{
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 static CACHE: OnceLock<Mutex<Option<list_cache::Cached<Rankings>>>> = OnceLock::new();
@@ -16,14 +20,57 @@ use browser_relay::insights::{rank_report as report, tranco_metadata as metadata
 fn path() -> Result<std::path::PathBuf> {
     list_cache::path("BROWSER_RELAY_TRANCO_DIR", "tranco.bin")
 }
-pub fn check(names: &[String]) -> Report {
-    match path().and_then(|path| {
+/// Holds the source index weakly so a replaced ranking list can be freed.
+static BRANDS: Mutex<Option<(Weak<Rankings>, Arc<BrandIndex>)>> = Mutex::new(None);
+
+fn rankings() -> Result<Arc<Rankings>> {
+    path().and_then(|path| {
         list_cache::load(
             path,
             CACHE.get_or_init(|| Mutex::new(None)),
             Rankings::read_sized,
         )
-    }) {
+    })
+}
+/// Built once per loaded index; rebuilt only when the cache file changes.
+fn brands(db: &Arc<Rankings>) -> Arc<BrandIndex> {
+    let mut cached = BRANDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((source, index)) = cached.as_ref()
+        && source
+            .upgrade()
+            .is_some_and(|alive| Arc::ptr_eq(&alive, db))
+    {
+        return index.clone();
+    }
+    let index = Arc::new(BrandIndex::build(db));
+    *cached = Some((Arc::downgrade(db), index.clone()));
+    index
+}
+/// Factors plus whether lookalike checks could run (a ranking index is loaded).
+pub fn risk(facts: &Facts) -> (Vec<Factor>, bool) {
+    let now = i64::try_from(list_cache::now()).unwrap_or(i64::MAX);
+    match rankings() {
+        Ok(db) => {
+            let brands = brands(&db);
+            (
+                risk::assess(
+                    facts,
+                    Some(&Context {
+                        rankings: &db,
+                        brands: &brands,
+                    }),
+                    now,
+                ),
+                true,
+            )
+        }
+        Err(_) => (risk::assess(facts, None, now), false),
+    }
+}
+pub fn check(names: &[String]) -> Report {
+    match rankings() {
         Ok(db) => report(&db, names, list_cache::now()),
         Err(error) => Report {
             rank: None,
