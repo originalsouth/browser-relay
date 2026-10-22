@@ -95,7 +95,9 @@ final class InspectionModel: ObservableObject {
             guard token == generation else { throw CancellationError() }
             var certificate: Certificate?
             if let bytes = result.certificate {
-                certificate = try? Core.call(["op": "certificate", "der": Array(bytes)])
+                var input: [String: Any] = ["op": "certificate", "derBase64": bytes.base64EncodedString(), "directory": root.path]
+                if let issuer = result.issuerCertificate { input["issuerBase64"] = issuer.base64EncodedString() }
+                certificate = try? await Core.work(input)
             }
             var geo: Geo?
             if let ip = result.peer {

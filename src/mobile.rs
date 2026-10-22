@@ -249,20 +249,122 @@ fn request(value: &Value) -> Result<Value> {
             Ok(json!({"width":code.width(),"quietZone":crate::qr::QUIET_ZONE,"modules":modules}))
         }
         "certificate" => {
-            let bytes: Vec<u8> = value["der"]
-                .as_array()
-                .ok_or("Missing certificate.")?
-                .iter()
-                .map(|v| {
-                    v.as_u64()
-                        .and_then(|n| u8::try_from(n).ok())
-                        .ok_or("Invalid certificate byte.".into())
-                })
-                .collect::<Result<_>>()?;
-            let cert = crate::certificate::certificate_info(&bytes)?;
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            let decode = |key: &str| -> Result<Vec<u8>> {
+                let value = string(value, key)?;
+                if value.len() > crate::transparency::MAX_CERT * 4 / 3 + 4 {
+                    return Err("Certificate exceeds 32 KiB.".into());
+                }
+                let bytes = STANDARD
+                    .decode(value)
+                    .map_err(|_| "Invalid certificate encoding.")?;
+                if bytes.len() > crate::transparency::MAX_CERT {
+                    return Err("Certificate exceeds 32 KiB.".into());
+                }
+                Ok(bytes)
+            };
+            let bytes = if value["derBase64"].is_string() {
+                decode("derBase64")?
+            } else {
+                let items = value["der"]
+                    .as_array()
+                    .filter(|v| v.len() <= crate::transparency::MAX_CERT)
+                    .ok_or("Missing or oversized certificate.")?;
+                items
+                    .iter()
+                    .map(|v| {
+                        v.as_u64()
+                            .and_then(|n| u8::try_from(n).ok())
+                            .ok_or("Invalid certificate byte.".into())
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            let issuer = if value["issuerBase64"].is_string() {
+                Some(decode("issuerBase64")?)
+            } else {
+                None
+            };
+            let path = value["directory"]
+                .as_str()
+                .map(|dir| Path::new(dir).join(crate::ct_logs::FILE));
+            let cert = crate::certificate::certificate_with_ct(
+                &bytes,
+                issuer.as_deref(),
+                path.as_deref(),
+            )?;
             Ok(
-                json!({"subject":cert.subject,"issuer":cert.issuer,"detail":cert.detail,"notBefore":cert.not_before,"notAfter":cert.not_after}),
+                json!({"subject":cert.subject,"issuer":cert.issuer,"detail":cert.detail,
+                "notBefore":cert.not_before,"notAfter":cert.not_after,
+                "ctSummary":cert.transparency.summary,"ctDetail":cert.transparency.detail,"proof":cert.transparency.proof.as_ref().map(|p|p.data())}),
             )
+        }
+        "proof_prepare" | "proof_audit" | "proof_result" => {
+            let path = value["directory"]
+                .as_str()
+                .map(|dir| Path::new(dir).join(crate::ct_logs::FILE));
+            let proof = crate::ct_proof::Proof::from_data(&value["proof"], path.as_deref())?;
+            if value["op"] == "proof_prepare" {
+                return Ok(
+                    json!({"headURL":proof.head_url()?.as_str(),"disclosure":proof.disclosure(),"limit":crate::ct_proof::MAX_RESPONSE}),
+                );
+            }
+            let head = read(
+                Path::new(string(value, "head")?),
+                crate::ct_proof::MAX_RESPONSE,
+            )?;
+            let now = crate::cache::now() as i64;
+            if value["op"] == "proof_audit" {
+                return Ok(json!({"url":proof.audit_url(&head, now)?.as_str()}));
+            }
+            let audit = read(
+                Path::new(string(value, "audit")?),
+                crate::ct_proof::MAX_RESPONSE,
+            )?;
+            Ok(json!({"message":proof.verify(&head, &audit, now)?}))
+        }
+        "ct_sources" => Ok(
+            json!({"list":crate::ct_logs::LIST_URL,"signature":crate::ct_logs::SIGNATURE_URL,
+            "listLimit":crate::ct_logs::MAX_LIST,"signatureLimit":crate::ct_logs::MAX_SIGNATURE,"disclosure":crate::ct_logs::DISCLOSURE}),
+        ),
+        "ct_update" => {
+            let bytes = read(Path::new(string(value, "list")?), crate::ct_logs::MAX_LIST)?;
+            let sig = read(
+                Path::new(string(value, "signature")?),
+                crate::ct_logs::MAX_SIGNATURE,
+            )?;
+            let message = crate::ct_logs::update(
+                &Path::new(string(value, "directory")?).join(crate::ct_logs::FILE),
+                &bytes,
+                &sig,
+                &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )?;
+            Ok(json!({"message":message}))
+        }
+        "history_auth" => {
+            crate::certificate_history::validate_key(string(value, "key")?)?;
+            Ok(json!({}))
+        }
+        "history_prepare" => {
+            let lookup = crate::certificate_history::prepare(string(value, "host")?)?;
+            let url = crate::certificate_history::page_url(&lookup, value["after"].as_str())?;
+            Ok(
+                json!({"host":lookup.host,"url":url.as_str(),"disclosure":lookup.disclosure,
+                "authDisclosure":crate::certificate_history::AUTH_DISCLOSURE,"limit":crate::certificate_history::MAX_RESPONSE}),
+            )
+        }
+        "history_result" => {
+            let status = value["status"]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or("Missing HTTP status.")?;
+            crate::certificate_history::status_error(status)?;
+            let lookup = crate::certificate_history::prepare(string(value, "host")?)?;
+            let bytes = read(
+                Path::new(string(value, "path")?),
+                crate::certificate_history::MAX_RESPONSE,
+            )?;
+            let page = crate::certificate_history::page(&bytes, &lookup, value["after"].as_str())?;
+            Ok(json!({"message":page.summary,"next":page.next}))
         }
         "route_start" => {
             let mut route = Route::new(string(value, "url")?)?;
@@ -554,6 +656,34 @@ mod tests {
         assert!(read_index(&path, Rankings::read_bounded).is_ok());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_bridge_verifies_embedded_scts_and_history_preparation_is_local() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let data = request(&json!({"op":"certificate",
+            "derBase64":STANDARD.encode(include_bytes!("../tests/fixtures/ct-github-leaf.der")),
+            "issuerBase64":STANDARD.encode(include_bytes!("../tests/fixtures/ct-github-issuer.der"))})).unwrap();
+        assert!(
+            data["ctSummary"]
+                .as_str()
+                .unwrap()
+                .starts_with("2/2 SCT signatures verified")
+        );
+        let prepared = request(&json!({"op":"history_prepare","host":"docs.github.com"})).unwrap();
+        assert!(
+            prepared["disclosure"]
+                .as_str()
+                .unwrap()
+                .contains("docs.github.com")
+        );
+        assert!(
+            prepared["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://api.certspotter.com/")
+        );
+        assert!(request(&json!({"op":"history_prepare","host":"private.local"})).is_err());
     }
 
     #[test]

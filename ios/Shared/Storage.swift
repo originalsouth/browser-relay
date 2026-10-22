@@ -34,6 +34,24 @@ enum Storage {
         try Data(contentsOf: source).write(to: destination, options: .atomic)
     }
 
+    static func updateCT() async throws -> String {
+        let sources: CTSources = try Core.call(["op": "ct_sources"])
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let list = temporary.appendingPathComponent("list")
+        let signature = temporary.appendingPathComponent("signature")
+        for (text, cap, file) in [(sources.list, sources.listLimit, list), (sources.signature, sources.signatureLimit, signature)] {
+            guard let url = URL(string: text) else { throw RelayError("Invalid CT publisher URL.") }
+            let response = try await Transfer().run(url, method: "GET", limit: cap, to: file)
+            guard response.status == 200 else { throw RelayError("CT publisher returned HTTP \(response.status); previous snapshot kept.") }
+        }
+        try Task.checkCancellation()
+        let result: CoreMessage = try await Core.work(["op": "ct_update", "list": list.path, "signature": signature.path,
+            "directory": try directory().path])
+        return result.message
+    }
+
     static func updateLists(status: @escaping @MainActor @Sendable (String) -> Void) async throws {
         let sources: ListSources = try Core.call(["op": "list_sources"])
         let root = try directory()

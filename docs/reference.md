@@ -17,8 +17,10 @@ Opening and copying still use the complete link.
 
 **Inspect link** (**Ctrl+I**) checks the first link in a compact dashboard: DNS addresses,
 HTTP redirects, TLS validation, certificate subject and issuer, connected peers,
-local GeoIP with country flags, and eight ping probes per peer. The IP selector
-switches location and latency results together. **Details & privacy** opens the
+local GeoIP with country flags, and an optional ping chart. **Ping…** shows the
+selected peer IP and privacy disclosure; **Send 8 probes** starts one batch for
+that IP. No probes are sent by opening Inspect or switching peers. The IP selector
+switches location and latency results together. Each batch needs confirmation. **Details & privacy** opens the
 full report; closing the inspector cancels outstanding checks.
 
 ![Link inspection dashboard](../assets/inspection.png)
@@ -178,9 +180,80 @@ Re-run with
 `cargo test --release --lib evaluate_url_only_factors -- --ignored --nocapture`
 (set `BROWSER_RELAY_TRANCO_DIR` and `RISK_EVAL_PHISH`).
 
+### Certificate Transparency
+
+The **CT** button in Connection Security shows embedded RFC 6962 timestamp
+verification. It uses the leaf and issuer from the already-verified TLS connection
+and locally stored log keys; no CT provider is contacted by this check. The shared Rust implementation
+verifies the issuer signature, reconstructs the precertificate without its SCT
+extension, and checks each log signature, timestamp, temporal interval and log
+state. Unknown logs, unsupported signatures and malformed inputs stay unverified.
+TLS chain/hostname verification remains mandatory and independent of CT results.
+
+The bundled snapshot comes from [Google's signed CT log list](https://github.com/GoogleChrome/CertificateTransparency/blob/main/log_lists.md)
+(version 95.8, published 2026-10-21), including tiled logs. **Update log keys…**
+under CT downloads the list and signature from `www.gstatic.com`, without sending
+any inspected hostname or certificate. The equivalent CLI action is:
+
+```sh
+browser-relay --update-ct-logs
+```
+
+The shared Rust core verifies Google's signature with the pinned key in
+`assets/ct-log-list-key.der`. The list is capped at 1 MiB; malformed, unsigned,
+stale, future-dated or older updates are rejected before atomic replacement.
+A file lock prevents concurrent updates from rolling back the cache. The signed
+cache is revalidated when changed, with bundled keys as a fallback. Set
+`BROWSER_RELAY_CT_DIR` to override its desktop directory; otherwise it uses the
+usual Browser Relay data directory. iOS stores it in the shared app container and
+updates from **Local data**. Reopen inspection after updating. There are no
+background refreshes. Results show the snapshot date and warn after 90 days.
+A publisher signing-key change requires an application update.
+
+A verified SCT is a signed promise to log a certificate, not an inclusion proof,
+full browser-policy compliance, or evidence that the site's content is safe.
+TLS/OCSP-delivered SCTs are not inspected. Missing embedded SCTs alone do not imply
+a dangerous site. CT observations never block opening a link.
+
+**Verify log inclusion…** checks the first locally verified SCT whose log supports
+the RFC 6962 HTTP proof API. Its separate disclosure names the log and explains
+that a log-entry hash can identify the certificate and its hostnames. Two bounded
+HTTPS requests fetch a tree head and an audit path, each capped at 64 KiB. Rust
+verifies the tree-head signature and timestamp, leaf index, Merkle path and signed
+root. No redirects, retries, cookies or API keys are used. Desktop requests pin
+public log addresses and are disabled for proxy/private destinations. iOS uses
+its ephemeral system transport. An unavailable proof is not a safety verdict:
+new entries may still be awaiting incorporation, and logs can be unavailable.
+Tiled-log inclusion proofs, consistency/split-view audits and full browser CT
+policy evaluation are not implemented. These are separate from SCT verification.
+
+**Certificate history…** is a separate opt-in lookup under CT. The consent prompt
+names the exact initial hostname and SSLMate Cert Spotter. Unlike RDAP, this
+includes the subdomain; no path, query or fragment is sent. The provider sees
+the hostname and connection IP. Results stay in memory, with no persistent
+history cache. Matching wildcard certificates are included; unrelated subdomains
+are not requested. Desktop history lookups are disabled with a proxy or private
+initial destination; iOS uses its ordinary ephemeral system transport.
+
+An optional masked **API key** field supports account-backed access. The key is
+held only in memory for the current panel and sent as a sensitive Bearer header
+to the fixed Cert Spotter HTTPS endpoint. It is not put in URLs, reports, command
+arguments or files; redirects cannot forward it. Using it identifies your account
+to the provider. Leave it empty for limited anonymous queries. Access and rate
+limits are reported without bypassing them; account requirements follow
+[Cert Spotter's API terms](https://sslmate.com/help/reference/ct_search_api_v1).
+
+Each click requests one JSON page, capped at 1 MiB and 1,000 records, displaying
+up to eight issuances sorted by certificate validity start within that page.
+**Load next page** explicitly requests newer-discovered issuances; an empty page
+ends the results. Repeated cursors or 100 pages stop the session. No automatic
+pagination, retries, or fallback providers are used. The API excludes expired
+certificates, so this is not complete historical coverage, first-ever issuance
+or domain age. Failed requests preserve the cursor for an explicit retry.
+
 ### Optional online checks and WHOIS
 
-**WHOIS / RDAP**, **VirusTotal**, and **Online GeoIP** are opt-in. Each button
+**Log inclusion**, **certificate history**, **WHOIS / RDAP**, **VirusTotal**, and **Online GeoIP** are opt-in. Each button
 shows the identifier and destination before sharing anything. Domain checks are
 unavailable for proxy/private destinations. Reopen WHOIS or GeoIP to read the
 result, or find it in **Details & privacy**.
@@ -204,8 +277,9 @@ its redirect destinations.
 
 Reviewed 2026-10-15. Opening the chooser or QR popup makes no inspection requests.
 Inspect sends a HEAD request **including the link's path and query** to its
-destination. Your resolver sees hostnames; peers see ICMP probes. Fragments are
-removed, credentials are rejected, and no cookies or Referer headers are sent.
+destination. Your resolver sees hostnames; separately confirmed ping probes contact
+the selected peer. Fragments are removed, credentials are rejected, and no cookies
+or Referer headers are sent.
 Another origin requires confirmation.
 
 HTTP honors proxy and NO_PROXY settings. With proxy environment variables present,
@@ -217,12 +291,17 @@ Confidential public hostnames cannot always be recognized: review the disclosure
 | Optional action | Information disclosed | Privacy limits |
 | --- | --- | --- |
 | Update local indexes | Connection IP, request metadata, public list version; **no inspected hostname or URL** | Full lists only on request. [Tranco logs requests](https://tranco-list.eu/privacy_policy). Matching stays offline. |
+| Update CT log keys | Connection IP and requests for two fixed public files to Google | Pinned publisher signature, size and rollback checks; no inspected hostname or certificate. |
+| Log inclusion | Certificate-identifying log-entry hash and connection IP to the named log | Two requests only after consent; signed-head and Merkle verification. No URL path/query, API key, cookies or redirects. |
+| Certificate history | Exact initial hostname, including subdomain, to SSLMate Cert Spotter; account identity if an API key is entered | One page per click of unexpired issuances; no link path/query, cookies or redirects. The provider may log requests; no retention guarantee is claimed. [API coverage and access terms](https://sslmate.com/help/reference/ct_search_api_v1). |
+| Ping | Source IP, selected peer IP and timing, visible to the destination and networks along the route | Eight ICMP probes only after confirmation, with 16-byte all-zero payloads. No hostname or URL. Disabled with proxy environment settings; closing the inspector cancels remaining probes. |
 | WHOIS / RDAP | Registered domain to its authoritative registry | Registry policies vary; domain/IP logging is possible. No bootstrap intermediary or referrals. |
 | Online GeoIP | One public connected peer IP | [ipwho.is policy](https://ipwhois.io/privacy) permits usage/IP logging and Cloudflare processing; no fixed retention guarantee is claimed here. |
 | VirusTotal report | Initial hostname or public IP, via your browser | Browser cookies, account identity and history may apply. Its [privacy notice](https://cloud.google.com/terms/secops/privacy-notice) covers usage, identifiers and IP addresses. No full URL is submitted for scanning. |
 
 All providers also see your connection IP (or proxy egress) and request metadata.
 Optional checks receive no original URL path, query, credentials, or fragment.
+The separately entered Cert Spotter API key is used only for that service.
 Online GeoIP uses HTTPS without redirects or cookies, with a 64 KiB response cap.
 Browser report pages can load their own third parties; their retention cannot be
 verified by the app. Reports stay in memory, with no telemetry. Missing data,
@@ -291,7 +370,7 @@ Linux's GTK interface and desktop integration live in `main.rs`, `browser.rs`,
 `list_cache.rs` provide Linux transport and storage-location adapters.
 
 `src/lib.rs` exposes the common Rust core: URL rules, redirect consent and limits,
-certificate and RDAP parsing, QR generation, GeoIP, packed domain indexes, reputation
+certificate, CT and RDAP parsing, QR generation, GeoIP, packed domain indexes, reputation
 assessments and atomic caches. Linux uses it directly; the [iOS app and Share
 extension](ios.md) use the C/JSON boundary in `mobile.rs`. UI, clipboard, browser
 launching, container paths and network transport stay at the platform boundary.
@@ -346,6 +425,15 @@ cp fuzz/seeds/* fuzz/corpus/domain_lists/
 cargo +nightly fuzz run domain_lists -- -max_total_time=60 -max_len=65536
 ```
 
+The certificate target exercises DER/SCT validation, inclusion-proof parsing and
+bounded history parsing:
+
+```sh
+mkdir -p fuzz/corpus/certificates
+cp tests/fixtures/*.der fuzz/corpus/certificates/
+cargo +nightly fuzz run certificates -- -max_total_time=60 -max_len=32768
+```
+
 Benchmark the downloaded data without networking or GTK:
 
 ```sh
@@ -373,6 +461,10 @@ identifiers, and requires a local GeoIP database:
 cargo test live_public_inspection -- --ignored --nocapture
 # Separately contact example.com's authoritative registration service:
 cargo test whois::tests::live_registry_lookup -- --ignored --nocapture
+# Explicitly send github.com to SSLMate Cert Spotter:
+cargo test live_github_certificate_history -- --ignored --nocapture
+# Explicitly query the public GitHub fixture’s CT log with its entry hash:
+cargo test live_github_log_inclusion -- --ignored --nocapture
 ```
 
 The regular checks do not open your browsers or modify your desktop preferences or

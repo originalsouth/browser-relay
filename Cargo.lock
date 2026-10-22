@@ -95,6 +95,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 name = "browser-relay"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "gio-unix",
  "gtk4",
  "hickory-resolver",
@@ -103,6 +104,9 @@ dependencies = [
  "psl",
  "qrcode",
  "reqwest",
+ "ring",
+ "rustls",
+ "rustls-native-certs",
  "serde_json",
  "surge-ping",
  "time",
@@ -2587,6 +2591,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror",
  "time",

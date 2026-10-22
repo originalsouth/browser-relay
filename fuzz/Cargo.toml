@@ -9,10 +9,18 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+browser-relay = { path = "..", default-features = false }
 
 [[bin]]
 name = "domain_lists"
 path = "domain_lists.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificates"
+path = "certificates.rs"
 test = false
 doc = false
 bench = false

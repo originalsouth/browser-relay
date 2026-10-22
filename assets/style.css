@@ -98,3 +98,10 @@ window.relay.solid-csd { border: 1px solid #41394f; border-radius: 0; }
 .relay scrollbar slider { min-width: 6px; min-height: 6px; margin: 0; padding: 0; border: none; }
 .relay scrollbar.vertical slider { min-height: 30px; }
 .relay scrollbar.horizontal slider { min-width: 30px; }
+
+.relay .certificate-menu > button { min-height: 0; min-width: 0; padding: 0 6px; border: none; font-size: 10px; }
+.relay .certificate-menu arrow { min-height: 10px; min-width: 10px; }
+
+.relay .history-key { background: #191821; color: #f2f1f8; border: 1px solid #58486b; border-radius: 9px; padding: 9px 11px; box-shadow: none; }
+.relay .history-key text { background: transparent; color: #f2f1f8; }
+.relay .history-key:focus-within { border-color: #b99af8; outline: 1px solid #b99af8; outline-offset: 1px; }

@@ -8,9 +8,20 @@ pub struct CertificateInfo {
     pub detail: String,
     pub not_before: i64,
     pub not_after: i64,
+    pub transparency: crate::transparency::Report,
 }
 
 pub fn certificate_info(der: &[u8]) -> Result<CertificateInfo> {
+    certificate_with_issuer(der, None)
+}
+pub fn certificate_with_issuer(der: &[u8], issuer_der: Option<&[u8]>) -> Result<CertificateInfo> {
+    certificate_with_ct(der, issuer_der, None)
+}
+pub fn certificate_with_ct(
+    der: &[u8],
+    issuer_der: Option<&[u8]>,
+    ct_path: Option<&std::path::Path>,
+) -> Result<CertificateInfo> {
     use crate::display_text::clean;
     use x509_parser::{extensions::GeneralName, x509::X509Name};
     let (_, cert) = x509_parser::parse_x509_certificate(der)
@@ -81,10 +92,17 @@ pub fn certificate_info(der: &[u8]) -> Result<CertificateInfo> {
         cert.validity().not_before,
         cert.validity().not_after
     );
+    let transparency =
+        crate::transparency::verify_cached(der, issuer_der, crate::cache::now() as i64, ct_path);
+    let detail = format!(
+        "{detail}\n\nCertificate Transparency\n{}",
+        transparency.detail
+    );
     Ok(CertificateInfo {
         subject,
         issuer,
         detail,
+        transparency,
         not_before: cert.validity().not_before.timestamp(),
         not_after: cert.validity().not_after.timestamp(),
     })

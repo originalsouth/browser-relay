@@ -90,6 +90,7 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
             popup = window(proc,'^Inspect link$')
             time.sleep(1.5)
             before = capture_text(popup,folder/'before.png')
+            assert 'no probes sent' in before, before
             assert 'Inspection incomplete' in before, before
             assert 'Verified HTTPS' not in before, before
             assert 'RISK FACTORS' in before, before
@@ -117,6 +118,35 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
                 assert requests.count('/final') == 1
             else:
                 assert requests == ['/start','/broken'], requests
+            if follows_redirect:
+                # Inspection is already done. Opening the per-IP disclosure must
+                # leave the chart untouched; confirmation starts a separate job.
+                assert 'no probes sent' in after, after
+                data = command('tesseract', str(folder/'after.png'), 'stdout', 'tsv')
+                row = next(row for row in csv.DictReader(io.StringIO(data), delimiter='\t') if row['text'].startswith('Ping'))
+                command('xdotool', 'mousemove', '--window', popup,
+                        str(int(row['left']) + int(row['width']) // 2),
+                        str(int(row['top']) + int(row['height']) // 2), 'click', '1')
+                command('xdotool', 'mousemove', '1200', '1000')
+                time.sleep(.3)
+                command('import', '-window', 'root', str(folder/'consent.png'))
+                disclosure = command('tesseract', str(folder/'consent.png'), 'stdout')
+                assert '127.0.0.1' in disclosure and 'source IP' in disclosure, disclosure
+                assert 'no probes sent' in capture_text(popup, folder/'still-idle.png')
+                data = command('tesseract', str(folder/'consent.png'), 'stdout', 'tsv')
+                # Pick the last Send: the first occurrence is the disclosure text.
+                matches = [r for r in csv.DictReader(io.StringIO(data), delimiter='\t') if r['text'] == 'Send']
+                row = matches[-1]
+                command('xdotool', 'mousemove', str(int(row['left']) + int(row['width']) // 2),
+                        str(int(row['top']) + int(row['height']) // 2), 'click', '1')
+                command('xdotool', 'mousemove', '1200', '1000')
+                for _ in range(40):
+                    time.sleep(.1)
+                    measured = capture_text(popup, folder/'ping.png')
+                    if '8/8 probes' in measured or 'ICMP unavailable' in measured:
+                        break
+                assert '8/8 probes' in measured or 'ICMP unavailable' in measured, measured
+                assert 'Route includes HTTP' in measured, measured
             if shots:
                 for name in ('before.png', 'after.png'):
                     if (folder/name).exists():
@@ -133,4 +163,4 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
                 proc.communicate()
     plain.shutdown(); plain.server_close()
     secure.shutdown(); secure.server_close()
-print('TLS failure stays amber; redirect consent preserves the report and earlier HTTP hop.')
+print('TLS failure stays amber; redirects preserve earlier HTTP; ping waits for per-peer consent and works after inspection finishes.')

@@ -10,6 +10,8 @@ struct RelayView: View {
     @State private var showQR = false
     @State private var copied = false
     @State private var inspected = false
+    @State private var showHistory = false
+    @State private var selectedProof: CTProof?
 
     var body: some View {
         ScrollView {
@@ -46,6 +48,10 @@ struct RelayView: View {
         .preferredColorScheme(.dark)
         .navigationTitle("Browser Relay").navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showQR) { QRView(link: link) }
+        .sheet(isPresented: $showHistory) {
+            CertificateHistoryView(host: URL(string: link)?.host ?? "")
+        }
+        .sheet(item: $selectedProof) { ProofView(proof: $0) }
         .onDisappear { inspection.cancel() }
     }
 
@@ -124,6 +130,17 @@ struct RelayView: View {
             if let last = inspection.hops.last {
                 if let certificate = last.certificate {
                     info("Certificate", "Issued to: \(certificate.subject)\nSigned by: \(certificate.issuer)", symbol: "seal")
+                    DisclosureGroup(certificate.ctSummary ?? "CT not verified") {
+                        Text(certificate.ctDetail ?? "No embedded timestamp result available.")
+                            .font(.caption).textSelection(.enabled)
+                    }
+                    if let proof = certificate.proof {
+                        Button("Verify log inclusion…") { selectedProof = proof }.buttonStyle(.bordered).tint(violet)
+                    }
+                    Button("Certificate history…") { showHistory = true }
+                        .buttonStyle(.bordered).tint(violet)
+                    Text("Opt-in · initial hostname · SSLMate Cert Spotter")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let geo = last.geo {
                     info("\(geo.flag) \(geo.name)", last.result.peer ?? "Peer address unavailable", symbol: "globe")
@@ -133,7 +150,7 @@ struct RelayView: View {
             }
             DisclosureGroup("Details & Privacy") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Inspection uses iOS DNS and TLS through an ephemeral URLSession. No cookies, saved credentials, page scripts, Referer header or automatic redirects. The destination and your DNS/network provider can observe the request. Certificate network fetching is disabled for inspection. A CDN, proxy or VPN may obscure the server location.")
+                    Text("Inspection uses iOS DNS and TLS through an ephemeral URLSession. No cookies, saved credentials, page scripts, Referer header or automatic redirects. The destination and your DNS/network provider can observe the request. Certificate network fetching is disabled for inspection. Embedded CT signatures are checked locally using signed log metadata; this does not prove inclusion or site safety. Certificate history requires a separate confirmation and sends the initial hostname to SSLMate Cert Spotter; an optional API key identifies your account to that service. Further pages need another click. Log inclusion has its own confirmation and sends a certificate-identifying hash to the named log. Log-key updates download two public files from Google without sharing an inspected address. A CDN, proxy or VPN may obscure the server location.")
                     Text("The browser is separate: visiting a page runs its content normally, including third-party resources. iOS does not expose desktop browser discovery, direct DNS records or the Linux ICMP probe here. Optional online reputation and RDAP checks remain available on Linux only.")
                     if let local = inspection.insights {
                         Text(local.oisd.detail)
@@ -301,5 +318,135 @@ struct RiskPanel: View {
         out += diff
         out += AttributedString(text(scalars[end...]))
         return out
+    }
+}
+
+private struct CertificateHistoryView: View {
+    let host: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var lookup: CertificateHistoryLookup?
+    @State private var requested = 0
+    @State private var busy = false
+    @State private var finished = false
+    @State private var cursor: String?
+    @State private var seen = Set<String>()
+    @State private var key = ""
+    @State private var result: String?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let lookup {
+                        Text(lookup.disclosure).font(.callout)
+                        Text(lookup.authDisclosure).font(.caption)
+                        SecureField("API key (optional, not saved)", text: $key)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(busy)
+                        Button(cursor == nil ? "Look up first page" : "Load next page") {
+                            busy = true
+                            error = nil
+                            requested += 1
+                        }.buttonStyle(.borderedProminent).tint(violet).disabled(busy || finished)
+                        if busy { ProgressView("Looking up…") }
+                        if finished { Text("End of this lookup").font(.caption) }
+                    }
+                    if let result { Text(result).font(.callout.monospaced()).textSelection(.enabled) }
+                    if let error { Text(error).foregroundStyle(.orange) }
+                }.padding(20)
+            }
+            .navigationTitle("Certificate history")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+        .task {
+            do { lookup = try Core.call(["op": "history_prepare", "host": host]) }
+            catch { self.error = error.localizedDescription }
+        }
+        .task(id: requested) {
+            guard requested > 0, !finished else { return }
+            defer { busy = false }
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: file) }
+            do {
+                var input: [String: Any] = ["op": "history_prepare", "host": host]
+                if let cursor { input["after"] = cursor }
+                let prepared: CertificateHistoryLookup = try Core.call(input)
+                guard let url = URL(string: prepared.url) else { throw RelayError("Invalid history endpoint.") }
+                let response = try await Transfer().run(url, method: "GET", limit: prepared.limit, to: file, bearerToken: key)
+                try Task.checkCancellation()
+                input["op"] = "history_result"
+                input["status"] = response.status
+                input["path"] = file.path
+                let report: CertificateHistoryPage = try await Core.work(input)
+                try Task.checkCancellation()
+                result = key.isEmpty ? report.message : report.message.replacingOccurrences(of: key, with: "[redacted]")
+                if let next = report.next {
+                    if !seen.insert(next).inserted || seen.count >= 100 {
+                        finished = true
+                        result = (result ?? "") + "\nStopped at a repeated cursor or the 100-page session limit."
+                    }
+                } else { finished = true }
+                cursor = report.next
+            } catch is CancellationError {} catch { self.error = error.localizedDescription }
+        }
+        .onDisappear { key = "" }
+    }
+}
+
+private struct ProofView: View {
+    let proof: CTProof
+    @Environment(\.dismiss) private var dismiss
+    @State private var lookup: CTProofLookup?
+    @State private var requested = false
+    @State private var result: String?
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let lookup {
+                        Text(lookup.disclosure).font(.callout)
+                        if !requested { Button("Request and verify proof") { requested = true }.buttonStyle(.borderedProminent).tint(violet) }
+                        else if result == nil && error == nil { ProgressView("Checking inclusion…") }
+                    }
+                    if let result { Text(result).textSelection(.enabled) }
+                    if let error { Text(error).foregroundStyle(.orange) }
+                }.padding(20)
+            }.navigationTitle("Log inclusion").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }.preferredColorScheme(.dark)
+        .task {
+            do { lookup = try Core.call(["op": "proof_prepare", "proof": proof.requestValue, "directory": try Storage.directory().path]) }
+            catch { self.error = error.localizedDescription }
+        }
+        .task(id: requested) {
+            guard requested, let lookup else { return }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let head = folder.appendingPathComponent("head")
+                let audit = folder.appendingPathComponent("audit")
+                func download(_ text: String, to file: URL) async throws {
+                    guard let url = URL(string: text) else { throw RelayError("Invalid log endpoint.") }
+                    let response = try await Transfer().run(url, method: "GET", limit: lookup.limit, to: file)
+                    guard response.status == 200 else { throw RelayError("CT log returned HTTP \(response.status). Proof unavailable; site trust remains unknown.") }
+                }
+                try await download(lookup.headURL, to: head)
+                try Task.checkCancellation()
+                var input: [String: Any] = ["op": "proof_audit", "proof": proof.requestValue, "directory": try Storage.directory().path, "head": head.path]
+                let next: CTProofNext = try await Core.work(input)
+                try Task.checkCancellation()
+                try await download(next.url, to: audit)
+                try Task.checkCancellation()
+                input["op"] = "proof_result"
+                input["audit"] = audit.path
+                let report: CoreMessage = try await Core.work(input)
+                try Task.checkCancellation()
+                result = report.message
+            } catch is CancellationError {} catch { self.error = error.localizedDescription }
+        }
     }
 }

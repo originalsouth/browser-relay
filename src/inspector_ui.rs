@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const PRIVACY: &str = "Inspect sends the path and query to the destination using HEAD requests. Your DNS resolver sees queried hostnames; ping contacts the connected peer. Same-origin redirects are followed. Another origin requires a separate click; HTTPS downgrades are stopped. Fragments and credentials are never sent. No cookies, page scripts, or embedded resources are loaded.\n\nTranco and OISD match cached domain lists locally. Tranco includes subdomains, checks exact names first, and labels parent-only matches. Popularity never overrides a blocklist warning. Big combines ads/tracking and security threats; NSFW is a separate adult/shock list. A match is not a malware verdict, and no match is not proof of safety. Explicit list updates download the full lists without sending inspected hostnames or URLs.\n\nRisk factors are computed on this device from the observed route, certificates and the local Tranco index (lookalike names). They send nothing. They are reasons to look closer; finding none does not mean a site is safe.\n\nGeoIP uses a local database. Locations are approximate and may describe a CDN or proxy rather than the origin. Proxy settings are respected; separate DNS and ping checks are skipped when a proxy is configured.\n\nOnline GeoIP, VirusTotal and WHOIS / RDAP stay off until explicitly requested. WHOIS sends only the registered domain to the registry shown in the disclosure; a bundled IANA map and public-suffix list choose it locally. Referrals and redirects are never followed. Registration records can be redacted and do not verify the operator. Each lookup shows the exact public hostname or IP it shares. Services see your connection IP and may log the request. Private/reserved destinations are excluded. VirusTotal opens in your browser, where cookies, account identity, and other third parties may apply.\n\nHTTPS validates the connection, not the content. Popularity is not a safety score. ICMP can be blocked; a failed ping does not establish whether a site is safe.";
+const PRIVACY: &str = "Inspect sends the path and query to the destination using HEAD requests. Your DNS resolver sees queried hostnames. Ping stays off until separately confirmed for the selected peer: eight ICMP probes disclose your source IP, target IP and timing to the destination and networks along the route. The payload is 16 zero bytes; no hostname, URL or credentials are included. Switching peers never starts probes, and closing the inspector cancels them. Same-origin redirects are followed. Another origin requires a separate click; HTTPS downgrades are stopped. Fragments and credentials are never sent. No cookies, page scripts, or embedded resources are loaded.\n\nTranco and OISD match cached domain lists locally. Tranco includes subdomains, checks exact names first, and labels parent-only matches. Popularity never overrides a blocklist warning. Big combines ads/tracking and security threats; NSFW is a separate adult/shock list. A match is not a malware verdict, and no match is not proof of safety. Explicit list updates download the full lists without sending inspected hostnames or URLs.\n\nRisk factors are computed on this device from the observed route, certificates and the local Tranco index (lookalike names). They send nothing. They are reasons to look closer; finding none does not mean a site is safe.\n\nGeoIP uses a local database. Locations are approximate and may describe a CDN or proxy rather than the origin. Proxy settings are respected; separate DNS and ping checks are skipped when a proxy is configured.\n\nEmbedded certificate-transparency signatures are verified locally with signed log metadata. Updating log keys contacts www.gstatic.com for two fixed public files, never an inspected hostname or certificate. These are logging promises, not inclusion proofs or site-safety checks. The log snapshot date and limitations are shown under CT. Certificate history is opt-in and sends the exact initial public hostname (including its subdomain) and your IP to SSLMate Cert Spotter; no link path, query or fragment is sent. Each click requests one page of unexpired issuances; further pages need another click. An optional API key identifies your Cert Spotter account, stays in memory and is sent only to that service. Log inclusion has its own confirmation: two requests send a certificate-identifying log-entry hash to the named log. Signed tree heads and Merkle proofs are checked locally; this is not a consistency audit or a safety verdict.\n\nOnline GeoIP, VirusTotal and WHOIS / RDAP stay off until explicitly requested. WHOIS sends only the registered domain to the registry shown in the disclosure; a bundled IANA map and public-suffix list choose it locally. Referrals and redirects are never followed. Registration records can be redacted and do not verify the operator. Each lookup shows the exact public hostname or IP it shares. Services see your connection IP and may log the request. Private/reserved destinations are excluded. VirusTotal opens in your browser, where cookies, account identity, and other third parties may apply.\n\nHTTPS validates the connection, not the content. Popularity is not a safety score. ICMP can be blocked; a failed ping does not establish whether a site is safe.";
 
 fn text(value: &str, class: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(value));
@@ -88,7 +88,6 @@ fn confirmed_task<T, F, U>(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.append(&text("ONLY IF YOU CHOOSE", "eyebrow"));
     content.append(&wrapped(disclosure));
-    content.append(&wrapped("The service sees your connection IP and may log this request. The link's path and query are not shared."));
     let confirm = gtk::Button::with_label(action);
     confirm.add_css_class("route");
     content.append(&confirm);
@@ -166,7 +165,9 @@ fn online_lookup<F>(
     let log = log.downgrade();
     confirmed_task(
         button,
-        disclosure,
+        &format!(
+            "{disclosure}\n\nThe service sees your connection IP and may log this request. The link's path and query are not shared."
+        ),
         "Run this lookup",
         cancel,
         task,
@@ -205,6 +206,160 @@ fn online_lookup<F>(
     {
         content.append(&result_box);
     }
+}
+
+fn history_lookup<F>(
+    button: &gtk::MenuButton,
+    lookup: browser_relay::certificate_history::Lookup,
+    output: &gtk::Label,
+    log: &gtk::TextBuffer,
+    cancel: &Cancel,
+    task: F,
+) where
+    F: Fn(
+            &browser_relay::certificate_history::Lookup,
+            Option<&str>,
+            &str,
+            &Cancel,
+        ) -> crate::Result<browser_relay::certificate_history::Page>
+        + Send
+        + Sync
+        + 'static,
+{
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.append(&text("ONLY IF YOU CHOOSE", "eyebrow"));
+    content.append(&wrapped(&lookup.disclosure));
+    content.append(&wrapped(
+        browser_relay::certificate_history::AUTH_DISCLOSURE,
+    ));
+    let key = gtk::PasswordEntry::builder()
+        .placeholder_text("API key (optional, not saved)")
+        .show_peek_icon(true)
+        .build();
+    key.add_css_class("history-key");
+    content.append(&key);
+    let confirm = gtk::Button::with_label("Look up first page");
+    confirm.add_css_class("route");
+    content.append(&confirm);
+    let buffer = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
+    let view = gtk::TextView::builder()
+        .buffer(&buffer)
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .build();
+    view.add_css_class("inspection-log");
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&view)
+        .visible(false)
+        .build();
+    scroll.set_size_request(400, 160);
+    content.append(&scroll);
+    button.set_popover(Some(&popover(&content)));
+    button.set_sensitive(true);
+    let cursor = Rc::new(RefCell::new(None::<String>));
+    let seen = Rc::new(RefCell::new(std::collections::HashSet::<String>::new()));
+    let busy = Rc::new(Cell::new(false));
+    let task = Arc::new(task);
+    let output = output.downgrade();
+    let log = log.downgrade();
+    let cancel = cancel.clone();
+    let scroll = scroll.downgrade();
+    confirm.connect_clicked(move |confirm| {
+        if busy.replace(true) || cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let secret = key.text().to_string();
+        if let Err(error) = browser_relay::certificate_history::validate_key(&secret) {
+            buffer.set_text(&error);
+            if let Some(scroll) = scroll.upgrade() {
+                scroll.set_visible(true);
+            }
+            busy.set(false);
+            return;
+        }
+        confirm.set_sensitive(false);
+        key.set_sensitive(false);
+        if let Some(output) = output.upgrade() {
+            output.set_text("Looking up…");
+        }
+        let lookup = lookup.clone();
+        let after = cursor.borrow().clone();
+        let flag = cancel.clone();
+        let task = task.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(task(&lookup, after.as_deref(), &secret, &flag));
+        });
+        let (cursor, seen, busy, cancel) =
+            (cursor.clone(), seen.clone(), busy.clone(), cancel.clone());
+        let (confirm, key, buffer) = (confirm.downgrade(), key.downgrade(), buffer.clone());
+        let (output, log, scroll) = (output.clone(), log.clone(), scroll.clone());
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            if cancel.load(Ordering::Relaxed) {
+                return glib::ControlFlow::Break;
+            }
+            let result = match receiver.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(_) => Err("Certificate history did not complete.".into()),
+            };
+            let Some(confirm) = confirm.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let mut message = match result {
+                Ok(page) => {
+                    let repeated = page
+                        .next
+                        .as_ref()
+                        .is_some_and(|id| !seen.borrow_mut().insert(id.clone()));
+                    // Bound local cursor tracking as well as each downloaded page.
+                    let limit = seen.borrow().len() >= 100;
+                    let more = page.next.is_some() && !repeated && !limit;
+                    *cursor.borrow_mut() = page.next;
+                    confirm.set_label(if more {
+                        "Load next page"
+                    } else {
+                        "End of this lookup"
+                    });
+                    confirm.set_sensitive(more);
+                    if repeated || limit {
+                        format!(
+                            "{}\nStopped at a repeated cursor or the 100-page session limit.",
+                            page.summary
+                        )
+                    } else {
+                        page.summary
+                    }
+                }
+                Err(error) => {
+                    confirm.set_label("Retry this page");
+                    confirm.set_sensitive(true);
+                    format!("Unavailable: {error}")
+                }
+            };
+            if message.len() > 8192 {
+                message = message.chars().take(2048).collect();
+            }
+            if let Some(output) = output.upgrade() {
+                output.set_text(message.lines().next().unwrap_or("No result"));
+                output.set_tooltip_text(Some(&message));
+            }
+            buffer.set_text(&message);
+            if let Some(scroll) = scroll.upgrade() {
+                scroll.set_visible(true);
+            }
+            if let Some(log) = log.upgrade() {
+                append_log(&log, "Optional certificate history", &message);
+            }
+            if let Some(key) = key.upgrade() {
+                key.set_sensitive(true);
+            }
+            busy.set(false);
+            glib::ControlFlow::Break
+        });
+    });
 }
 
 fn popularity_scale() -> (gtk::DrawingArea, Rc<Cell<Option<f64>>>) {
@@ -638,6 +793,8 @@ struct Peer {
     location: Option<crate::Result<Location>>,
     samples: Samples,
     ping_error: Option<String>,
+    ping_started: bool,
+    ping_running: bool,
 }
 #[derive(Clone)]
 struct PeerView {
@@ -647,9 +804,15 @@ struct PeerView {
     average: gtk::Label,
     stats: gtk::Label,
     chart: gtk::DrawingArea,
+    chart_revealer: gtk::Revealer,
+    ping_button: gtk::MenuButton,
 }
 impl PeerView {
     fn render(&self, peer: Option<&Peer>, done: bool) {
+        self.chart_revealer
+            .set_reveal_child(peer.is_some_and(|p| p.ping_running || !p.samples.values.is_empty()));
+        self.ping_button
+            .set_sensitive(peer.is_some_and(|p| !p.ping_running) && !inspect::proxy_configured());
         let Some(peer) = peer else {
             if done {
                 self.location.set_text("Unavailable");
@@ -686,10 +849,24 @@ impl PeerView {
                 self.note.set_tooltip_text(None);
             }
         }
-        if let Some(error) = &peer.ping_error {
+        self.ping_button.set_label(if peer.ping_running {
+            "Pinging…"
+        } else if peer.ping_started {
+            "Ping again…"
+        } else {
+            "Ping…"
+        });
+        if inspect::proxy_configured() {
+            self.average.set_text("Disabled");
+            self.stats.set_text("Ping skipped · proxy configured");
+        } else if let Some(error) = &peer.ping_error {
             self.average.set_text("Not measured");
             self.stats.set_text(error);
             self.stats.set_tooltip_text(Some(error));
+        } else if !peer.ping_started {
+            self.average.set_text("Not measured");
+            self.stats.set_text("Opt-in · no probes sent");
+            self.stats.set_tooltip_text(None);
         } else {
             let (average, stats) = peer.samples.summary();
             self.average.set_text(&average);
@@ -709,10 +886,48 @@ fn add_peer(peers: &RefCell<Vec<Peer>>, names: &gtk::StringList, ip: IpAddr) -> 
         location: None,
         samples: Samples::default(),
         ping_error: None,
+        ping_started: false,
+        ping_running: false,
     });
     names.append(&ip.to_string());
     index
 }
+fn ping_consent(
+    button: &gtk::MenuButton,
+    ip: IpAddr,
+    sender: &mpsc::Sender<Event>,
+    cancel: &Cancel,
+    peers: &Rc<RefCell<Vec<Peer>>>,
+) {
+    let peers = peers.clone();
+    let events = sender.clone();
+    let updates = sender.clone();
+    confirmed_task(
+        button,
+        &format!(
+            "Send {PROBE_COUNT} ICMP ping probes to {ip}? The destination and networks along the route can observe your source IP, this target IP and timing. Each payload is 16 zero bytes: no hostname, URL, cookies or credentials. This measures responsiveness, not trust. Only this IP is probed; no other peer or future inspection is authorized. Closing the inspector cancels remaining probes."
+        ),
+        "Send 8 probes",
+        cancel,
+        move |cancel| inspect::probe_peer(ip, &events, cancel),
+        move |state| {
+            let event = match state {
+                LookupState::Running => {
+                    // Mark busy synchronously so rapid peer changes cannot offer
+                    // a second batch before the event queue is drained.
+                    if let Some(peer) = peers.borrow_mut().iter_mut().find(|p| p.ip == ip) {
+                        peer.ping_running = true;
+                    }
+                    Event::PingStarted(ip)
+                }
+                LookupState::Complete(result) => Event::PingFinished(ip, result),
+            };
+            let _ = updates.send(event);
+        },
+    );
+    button.set_sensitive(!inspect::proxy_configured());
+}
+
 fn chart(peers: Rc<RefCell<Vec<Peer>>>, selected: Rc<Cell<usize>>) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder()
         .content_height(80)
@@ -808,7 +1023,7 @@ pub fn show(
     body.set_margin_start(24);
     body.set_margin_end(24);
     body.set_margin_top(10);
-    body.set_margin_bottom(8);
+    body.set_margin_bottom(4);
     let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let shield = gtk::Image::from_icon_name("security-high-symbolic");
     shield.set_pixel_size(30);
@@ -898,8 +1113,51 @@ pub fn show(
         .column_spacing(12)
         .row_spacing(12)
         .column_homogeneous(true)
+        .vexpand(false)
         .build();
     let connection = card("CONNECTION SECURITY");
+    let ct = menu("CT");
+    ct.add_css_class("certificate-menu");
+    ct.set_tooltip_text(Some(
+        "Local Certificate Transparency checks and optional certificate history",
+    ));
+    let ct_content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let ct_detail = wrapped("No certificate has been checked yet.");
+    let ct_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(280)
+        .min_content_width(380)
+        .child(&ct_detail)
+        .build();
+    ct_scroll.set_size_request(380, -1);
+    ct_content.append(&ct_scroll);
+    let inclusion = menu("Verify log inclusion…");
+    inclusion.set_sensitive(false);
+    let inclusion_result = wrapped("Opt-in · one supported log · certificate-identifying hash");
+    ct_content.append(&inclusion);
+    ct_content.append(&inclusion_result);
+    let history = menu("Certificate history…");
+    history.set_sensitive(false);
+    history.set_tooltip_text(Some(
+        "Available for the initial public hostname after direct inspection; disabled with a proxy.",
+    ));
+    let history_result = wrapped("Opt-in · SSLMate Cert Spotter · unexpired issuances");
+    ct_content.append(&history);
+    ct_content.append(&history_result);
+    let update_ct = menu("Update log keys…");
+    let ct_update_result = wrapped("Signed metadata · downloaded only on request");
+    ct_content.append(&update_ct);
+    ct_content.append(&ct_update_result);
+    ct.set_popover(Some(&popover(&ct_content)));
+    let heading = connection.first_child().unwrap();
+    connection.remove(&heading);
+    heading.set_hexpand(true);
+    let connection_heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    connection_heading.append(&heading);
+    connection_heading.append(&ct);
+    connection.append(&connection_heading);
     let tls = text("Checking…", "dashboard-value");
     connection.append(&tls);
     let response = text("Waiting for destination headers", "inspection-detail");
@@ -947,11 +1205,27 @@ pub fn show(
     dns.append(&dns_note);
     grid.attach(&dns, 0, 1, 1, 1);
     let ping = card("PING · ROUND-TRIP LATENCY");
-    let average = text("Waiting…", "dashboard-value");
+    let ping_button = menu("Ping…");
+    ping_button.add_css_class("certificate-menu");
+    ping_button.set_sensitive(false);
+    ping_button.set_tooltip_text(Some("Optional · review the selected IP and privacy disclosure before sending probes. Disabled with a proxy."));
+    let ping_title = ping.first_child().unwrap();
+    ping.remove(&ping_title);
+    ping_title.set_hexpand(true);
+    let ping_heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    ping_heading.append(&ping_title);
+    ping_heading.append(&ping_button);
+    ping.append(&ping_heading);
+    let average = text("Not measured", "dashboard-value");
     ping.append(&average);
     let bars = chart(peers.clone(), selected.clone());
-    ping.append(&bars);
-    let stats = text("8 probes · milliseconds", "footer");
+    let chart_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(180)
+        .child(&bars)
+        .build();
+    ping.append(&chart_revealer);
+    let stats = text("Opt-in · no probes sent", "footer");
     ping.append(&stats);
     grid.attach(&ping, 1, 1, 1, 1);
     body.append(&grid);
@@ -959,6 +1233,30 @@ pub fn show(
     let cancel: Cancel = Arc::new(AtomicBool::new(false));
     let log = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
     log.set_text(PRIVACY);
+    let result_label = ct_update_result.downgrade();
+    let update_log = log.downgrade();
+    confirmed_task(
+        &update_ct,
+        browser_relay::ct_logs::DISCLOSURE,
+        "Download log keys",
+        &cancel,
+        crate::ct_transport::update_logs,
+        move |state| {
+            let Some(label) = result_label.upgrade() else {
+                return;
+            };
+            match state {
+                LookupState::Running => label.set_text("Updating log keys…"),
+                LookupState::Complete(result) => {
+                    let message = result.unwrap_or_else(|e| format!("Unavailable: {e}"));
+                    label.set_text(&message);
+                    if let Some(log) = update_log.upgrade() {
+                        append_log(&log, "CT log update", &message);
+                    }
+                }
+            }
+        },
+    );
     let online = gtk::Box::new(gtk::Orientation::Vertical, 4);
     online.add_css_class("dashboard-card");
     online.add_css_class("domain-insights");
@@ -1158,7 +1456,11 @@ pub fn show(
         average,
         stats,
         chart: bars,
+        chart_revealer,
+        ping_button,
     };
+    let (sender, receiver) = mpsc::channel();
+    let ping_sender = sender.clone();
     let done = Rc::new(Cell::new(false));
     let view = peer_view.clone();
     let store = peers.clone();
@@ -1171,8 +1473,13 @@ pub fn show(
     selector.connect_selected_notify(move |selector| {
         let index = selector.selected() as usize;
         selection.set(index);
+        let peer_store = store.clone();
         let store = store.borrow();
         let peer = store.get(index);
+        view.ping_button.set_popover(None::<&gtk::Popover>);
+        if let Some(peer) = peer {
+            ping_consent(&view.ping_button, peer.ip, &ping_sender, &flag, &peer_store);
+        }
         view.render(peer, finished.get());
         geo_button.set_sensitive(false);
         geo_button.set_popover(None::<&gtk::Popover>);
@@ -1225,7 +1532,6 @@ pub fn show(
         }
     });
     popup.add_controller(keys);
-    let (sender, receiver) = mpsc::channel();
     let (consent_sender, consent_receiver) = mpsc::channel();
     let link = link.to_string();
     let flag = cancel.clone();
@@ -1240,6 +1546,7 @@ pub fn show(
             cancel.store(true, Ordering::Relaxed);
             return glib::ControlFlow::Break;
         }
+        let mut changed = false;
         loop {
             match receiver.try_recv() {
                 Ok(Event::Dns(name, ips)) => {
@@ -1287,20 +1594,59 @@ pub fn show(
                     ));
                     response
                         .set_tooltip_text(Some(&format!("{connections} connection(s) · {url}")));
+                    inclusion.set_sensitive(false);
+                    inclusion.set_popover(None::<&gtk::Popover>);
+                    inclusion_result.set_text("No supported inclusion proof available");
                     match certificate {
                         Some(Ok(info)) => {
+                            if let Some(proof) = info.transparency.proof.clone() {
+                                if !inspect::proxy_configured()
+                                    && peer.is_some_and(inspect::public_ip)
+                                {
+                                    inclusion_result.set_text(
+                                        "Opt-in · one log · certificate-identifying hash",
+                                    );
+                                    online_lookup(
+                                        &inclusion,
+                                        &proof.disclosure(),
+                                        &inclusion_result,
+                                        &log,
+                                        &cancel,
+                                        move |cancel| {
+                                            crate::ct_transport::inclusion(&proof, cancel)
+                                        },
+                                    );
+                                } else {
+                                    inclusion_result
+                                        .set_text("Unavailable for proxy/private destinations");
+                                }
+                            }
+                            ct.set_label(&format!(
+                                "CT · {}",
+                                info.transparency
+                                    .summary
+                                    .split_whitespace()
+                                    .next()
+                                    .filter(|s| s.contains('/'))
+                                    .unwrap_or("unknown")
+                            ));
+                            ct_detail.set_text(&info.transparency.detail);
                             subject.set_text(&format!("Issued to: {}", info.subject));
                             issuer.set_text(&format!("Signed by: {}", info.issuer));
                             subject.set_tooltip_text(Some(&info.detail));
                             issuer.set_tooltip_text(Some(&info.detail));
                         }
                         Some(Err(error)) => {
+                            ct.set_label("CT · unknown");
+                            ct_detail.set_text(&error);
                             subject.set_text("Issued to: unavailable");
                             issuer.set_text("Signed by: unavailable");
                             subject.set_tooltip_text(Some(&error));
                             issuer.set_tooltip_text(Some(&error));
                         }
                         None => {
+                            ct.set_label("CT · n/a");
+                            ct_detail.set_text("No TLS certificate on this HTTP connection.");
                             subject.set_text("Issued to: no TLS certificate");
                             issuer.set_text("Signed by: not applicable (HTTP)");
                             subject.set_tooltip_text(None);
@@ -1339,9 +1685,27 @@ pub fn show(
                     let index = add_peer(&peers, &peer_names, ip);
                     peers.borrow_mut()[index].samples.values.push(value);
                 }
-                Ok(Event::PingUnavailable(ip, error)) => {
+                Ok(Event::PingStarted(ip)) => {
                     let index = add_peer(&peers, &peer_names, ip);
-                    peers.borrow_mut()[index].ping_error = Some(error);
+                    let mut peers = peers.borrow_mut();
+                    let peer = &mut peers[index];
+                    peer.samples.values.clear();
+                    peer.ping_error = None;
+                    peer.ping_started = true;
+                    peer.ping_running = true;
+                }
+                Ok(Event::PingFinished(ip, result)) => {
+                    let index = add_peer(&peers, &peer_names, ip);
+                    let mut peers = peers.borrow_mut();
+                    peers[index].ping_running = false;
+                    if let Err(error) = &result {
+                        peers[index].ping_error = Some(error.clone());
+                    }
+                    append_log(
+                        &log,
+                        &format!("Optional ping · {ip}"),
+                        &result.unwrap_or_else(|e| e),
+                    );
                 }
                 Ok(Event::Section(title, detail)) => {
                     append_log(&log, &title, &detail);
@@ -1389,6 +1753,18 @@ pub fn show(
                     }
                 }
                 Ok(Event::PublicHost(name)) => {
+                    if let Ok(lookup) = browser_relay::certificate_history::prepare(&name) {
+                        history_result
+                            .set_text(&format!("Opt-in · initial hostname: {}", lookup.host));
+                        history_lookup(
+                            &history,
+                            lookup,
+                            &history_result,
+                            &log,
+                            &cancel,
+                            crate::ct_transport::history,
+                        );
+                    }
                     reputation(
                         &reputation_button,
                         &name,
@@ -1482,10 +1858,11 @@ pub fn show(
                         address_count.set_text("Unavailable");
                     }
                     peer_view.render(peers.borrow().get(selected.get()), true);
-                    return glib::ControlFlow::Break;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    peer_view.render(peers.borrow().get(selected.get()), done.get());
+                    if changed {
+                        peer_view.render(peers.borrow().get(selected.get()), done.get());
+                    }
                     return glib::ControlFlow::Continue;
                 }
                 Err(_) => {
@@ -1495,6 +1872,7 @@ pub fn show(
                     return glib::ControlFlow::Break;
                 }
             }
+            changed = true;
         }
     });
     popup.present();
@@ -1512,6 +1890,50 @@ mod tests {
             "<property name=\"label\">Warning: a&lt;b&gt; &amp; &quot;c&quot;</property>"
         ));
         assert!(ui.contains("class=\"GtkExpander\""));
+    }
+
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn ping_requires_confirmation_for_each_peer() {
+        gtk::init().unwrap();
+        let button = menu("Ping…");
+        let window = gtk::Window::new();
+        window.set_child(Some(&button));
+        window.present();
+        let peers = Rc::new(RefCell::new(Vec::new()));
+        let names = gtk::StringList::new(&[]);
+        let first = "127.0.0.1".parse().unwrap();
+        let second = "127.0.0.2".parse().unwrap();
+        add_peer(&peers, &names, first);
+        add_peer(&peers, &names, second);
+        let (sender, receiver) = mpsc::channel();
+        // Cancelled transport ensures this consent test never sends packets.
+        let cancel = Arc::new(AtomicBool::new(true));
+        for ip in [first, second] {
+            ping_consent(&button, ip, &sender, &cancel, &peers);
+            button.popup();
+            while glib::MainContext::default().iteration(false) {}
+            assert!(
+                receiver.try_recv().is_err(),
+                "opening or changing peers must not ping"
+            );
+        }
+        let content = button.popover().unwrap().child().unwrap();
+        let mut widget = content.first_child();
+        let mut confirmed = false;
+        while let Some(child) = widget {
+            if let Ok(confirm) = child.clone().downcast::<gtk::Button>() {
+                confirm.emit_clicked();
+                confirmed = true;
+                break;
+            }
+            widget = child.next_sibling();
+        }
+        assert!(confirmed);
+        assert!(matches!(receiver.try_recv(), Ok(Event::PingStarted(ip)) if ip == second));
+        assert!(!peers.borrow()[0].ping_running);
+        assert!(peers.borrow()[1].ping_running);
+        window.destroy();
     }
 
     #[test]
@@ -1650,6 +2072,85 @@ mod tests {
             std::fs::read(capture).unwrap(),
             b"--\0https://www.virustotal.com/gui/domain/example.org\0"
         );
+    }
+
+    #[test]
+    #[ignore = "GTK regression: run under Xvfb with --test-threads=1"]
+    fn certificate_history_waits_for_explicit_confirmation() {
+        gtk::init().unwrap();
+        let button = menu("Certificate history…");
+        let window = gtk::Window::new();
+        window.set_child(Some(&button));
+        window.present();
+        let output = text("Not checked", "footer");
+        let log = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let called = calls.clone();
+        let lookup = browser_relay::certificate_history::prepare("github.com").unwrap();
+        history_lookup(
+            &button,
+            lookup,
+            &output,
+            &log,
+            &cancel,
+            move |_, after, key, _| {
+                let page = called.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(after, if page == 0 { None } else { Some("next-cursor") });
+                assert_eq!(key, "fixture-key");
+                Ok(browser_relay::certificate_history::Page {
+                    summary: format!("Fixture page {}", page + 1),
+                    next: if page == 0 {
+                        Some("next-cursor".into())
+                    } else {
+                        None
+                    },
+                })
+            },
+        );
+        button.popup();
+        while glib::MainContext::default().iteration(false) {}
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "opening disclosure must not contact the provider"
+        );
+        let content = button.popover().unwrap().child().unwrap();
+        let mut child = content.first_child();
+        let mut action = None;
+        while let Some(widget) = child {
+            if let Ok(key) = widget.clone().downcast::<gtk::PasswordEntry>() {
+                key.set_text("fixture-key");
+            }
+            if let Ok(confirm) = widget.clone().downcast::<gtk::Button>() {
+                action = Some(confirm);
+            }
+            child = widget.next_sibling();
+        }
+        let confirm = action.unwrap();
+        for page in 1..=2 {
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                page - 1,
+                "pagination must wait for another click"
+            );
+            confirm.emit_clicked();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while output.text() != format!("Fixture page {page}")
+                && std::time::Instant::now() < deadline
+            {
+                while glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), page);
+            assert_eq!(output.text(), format!("Fixture page {page}"));
+        }
+        assert!(!confirm.is_sensitive());
+        assert!(
+            !log.text(&log.start_iter(), &log.end_iter(), false)
+                .contains("fixture-key")
+        );
+        window.destroy();
     }
 
     #[test]

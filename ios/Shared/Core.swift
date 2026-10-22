@@ -44,7 +44,7 @@ enum Core {
 struct Empty: Decodable, Sendable {}
 struct ValidLink: Decodable, Sendable { let url: String; let inspectionURL: String; let host: String }
 struct QR: Decodable, Sendable { let width: Int; let quietZone: Int; let modules: [Bool] }
-struct Certificate: Decodable, Sendable { let subject: String; let issuer: String; let detail: String; let notBefore: Int64?; let notAfter: Int64? }
+struct Certificate: Decodable, Sendable { let subject: String; let issuer: String; let detail: String; let notBefore: Int64?; let notAfter: Int64?; var ctSummary: String? = nil; var ctDetail: String? = nil; var proof: CTProof? = nil }
 struct RiskReport: Decodable, Sendable {
     struct Compare: Decodable, Sendable, Hashable { let shown: String; let brand: String; let shownSpan: [Int]; let brandSpan: [Int] }
     struct Factor: Decodable, Sendable, Hashable { let id: String; let severity: String; let word: String; let title: String; let evidence: String; let compare: Compare? }
@@ -103,3 +103,16 @@ struct ListSources: Decodable, Sendable {
 }
 struct TrancoSource: Decodable, Sendable { let url: String; let date: String; let id: String }
 struct CoreMessage: Decodable, Sendable { let message: String }
+
+struct CertificateHistoryLookup: Decodable, Sendable { let host: String; let url: String; let disclosure: String; let authDisclosure: String; let limit: Int }
+
+struct CTSources: Decodable, Sendable { let list: String; let signature: String; let listLimit: Int; let signatureLimit: Int; let disclosure: String }
+
+struct CertificateHistoryPage: Decodable, Sendable { let message: String; let next: String? }
+
+struct CTProof: Decodable, Sendable, Identifiable {
+    let id: String; let leaf: String; let timestamp: UInt64
+    var requestValue: [String: Any] { ["id": id, "leaf": leaf, "timestamp": timestamp] }
+}
+struct CTProofLookup: Decodable, Sendable { let headURL: String; let disclosure: String; let limit: Int }
+struct CTProofNext: Decodable, Sendable { let url: String }

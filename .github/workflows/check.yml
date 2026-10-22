@@ -10,13 +10,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev pkg-config dbus-daemon
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev pkg-config dbus-daemon xvfb xauth xdotool imagemagick tesseract-ocr openssl fonts-noto-color-emoji
       - name: Install Rust
         run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo test --locked
       - run: cargo test --locked --no-default-features --features mobile --lib
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo build --locked
+      - name: Local GUI privacy and layout regressions
+        env:
+          GTK_A11Y: none
+          GDK_BACKEND: x11
+          GSK_RENDERER: cairo
+        run: |
+          xvfb-run -a cargo test certificate_history_waits_for_explicit_confirmation -- --ignored --test-threads=1
+          xvfb-run -a cargo test ping_requires_confirmation_for_each_peer -- --ignored --test-threads=1
+          xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
+          xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/reputation.py
   ios:
     runs-on: macos-15
     steps:

@@ -28,9 +28,11 @@ flag lookalike domains, misleading brand names, fresh certificates and unexpecte
 redirects. Warnings open up front; expand any finding for the evidence, highlighted
 spelling differences and what to check. All assessed on your device.
 
-Certificates, server location and ping charts share one compact dashboard. Local
-**Tranco** rankings and **OISD** blocklists add context, including subdomains.
-Want more? WHOIS/RDAP, VirusTotal and online GeoIP are opt-in.
+Certificates, local transparency checks, server location and optional ping charts
+share one compact dashboard. Local **Tranco** rankings and **OISD** blocklists add
+context, including subdomains.
+Want more? Verify log inclusion, browse certificate history, or check WHOIS/RDAP,
+VirusTotal and online GeoIP. Each online check is opt-in.
 
 ![Inspecting the Browser Relay repository](assets/inspection.png)
 

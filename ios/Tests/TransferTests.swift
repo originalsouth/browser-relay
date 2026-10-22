@@ -7,14 +7,15 @@ private final class FixtureProtocol: URLProtocol {
     override func startLoading() {
         guard let url = request.url else { return }
         // Any accidental follow-up or unexpected header fails the request, without networking.
+        let expectedAuth = url.host == "api.certspotter.com" && url.path == "/v1/issuances" ? "Bearer fixture-secret" : nil
         guard request.value(forHTTPHeaderField: "Cookie") == nil,
-              request.value(forHTTPHeaderField: "Authorization") == nil,
+              request.value(forHTTPHeaderField: "Authorization") == expectedAuth,
               request.value(forHTTPHeaderField: "Referer") == nil else {
             client?.urlProtocol(self, didFailWithError: RelayError("Unexpected identifying header."))
             return
         }
         switch url.path {
-        case "/redirect":
+        case "/redirect", "/v1/issuances":
             let response = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1",
                                            headerFields: ["Location": "https://other.invalid/private", "Set-Cookie": "token=secret"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -44,6 +45,29 @@ private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender 
 }
 
 final class TransferTests: XCTestCase {
+    func testExplicitHistoryCredentialStaysOnItsEndpointAndRedirectIsNotFollowed() async throws {
+        let result = try await Transfer(protocolClasses: [FixtureProtocol.self]).run(
+            URL(string: "https://api.certspotter.com/v1/issuances?domain=github.com")!, method: "GET", bearerToken: "fixture-secret")
+        XCTAssertEqual(result.status, 302)
+        XCTAssertEqual(result.location, "https://other.invalid/private")
+    }
+
+    func testCredentialsAreRejectedBeforeUnrelatedDestinationsAreContacted() async throws {
+        for text in ["https://github.com/", "http://api.certspotter.com/v1/issuances", "https://api.certspotter.com:8443/v1/issuances", "https://api.certspotter.com/other"] {
+            do {
+                _ = try await Transfer(protocolClasses: [FixtureProtocol.self]).run(URL(string: text)!, bearerToken: "fixture-secret")
+                XCTFail("Credential guard should reject this endpoint")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("restricted")) }
+        }
+        do {
+            _ = try await Transfer(protocolClasses: [FixtureProtocol.self]).run(URL(string: "https://api.certspotter.com/v1/issuances")!, bearerToken: "fixture-secret\ninvalid")
+            XCTFail("Header injection must be rejected")
+        } catch {
+            XCTAssertFalse(error.localizedDescription.contains("fixture-secret"))
+            XCTAssertTrue(error.localizedDescription.contains("Invalid API key"))
+        }
+    }
+
     func testAuthenticationChallengesAreDeclinedWithoutCredentialsOrCancellation() {
         let transfer = Transfer()
         let session = URLSession(configuration: .ephemeral)

@@ -1,6 +1,7 @@
 mod blocklist;
 mod browser;
 use browser_relay::domain_list;
+mod ct_transport;
 mod http;
 mod inspect;
 mod inspector_ui;
@@ -30,6 +31,7 @@ Cancel closes the dialog without opening anything.
 
 Options:
   --prompt    Ask for a link when launched without one
+  --update-ct-logs  Download and authenticate CT log keys
   --update-lists  Download OISD and Tranco (including subdomains)
   --update-tranco  Download the Tranco popularity index
   --update-blocklists  Download OISD Big and NSFW for local inspection
@@ -202,6 +204,11 @@ fn run() -> Result<()> {
                     }
                     return Ok(());
                 }
+                "--update-ct-logs" => {
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    println!("{}", ct_transport::update_logs(&cancel)?);
+                    return Ok(());
+                }
                 "--update-blocklists" => {
                     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     println!("{}", blocklist::update(&cancel)?);
@@ -262,7 +269,10 @@ fn main() -> ExitCode {
             if !env::args().any(|arg| {
                 matches!(
                     arg.as_str(),
-                    "--update-blocklists" | "--update-tranco" | "--update-lists"
+                    "--update-blocklists"
+                        | "--update-tranco"
+                        | "--update-lists"
+                        | "--update-ct-logs"
                 )
             }) && (env::var_os("WAYLAND_DISPLAY").is_some() || env::var_os("DISPLAY").is_some())
                 && let Some(zenity) = executable(&["zenity"])

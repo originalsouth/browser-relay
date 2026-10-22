@@ -15,7 +15,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:gtk", "dep:gio-unix", "dep:reqwest", "dep:tokio", "dep:hickory-resolver", "dep:surge-ping", "dep:maxminddb"]
+desktop = ["dep:gtk", "dep:gio-unix", "dep:reqwest", "dep:tokio", "dep:hickory-resolver", "dep:surge-ping", "dep:maxminddb", "dep:rustls", "dep:rustls-native-certs"]
 mobile = ["dep:maxminddb"]
 
 [dependencies]
@@ -29,7 +29,11 @@ surge-ping = { version = "0.9", optional = true }
 maxminddb = { version = "0.32", optional = true }
 url = "2.5"
 serde_json = "1"
-x509-parser = { version = "0.18", default-features = false }
+x509-parser = { version = "0.18", default-features = false, features = ["verify"] }
+base64 = "0.22"
+ring = "0.17"
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = { version = "0.8", optional = true }
 psl = "2"
 idna = "1.1"
 unicode-security = "0.1"

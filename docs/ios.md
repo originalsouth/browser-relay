@@ -2,8 +2,8 @@
 
 The iOS client is a native SwiftUI app and Share extension backed by the same Rust
 core as Linux. It targets iOS 17 and later. **The native build and device behavior
-still need validation on a Mac**; the Rust core has been checked for iPhone and
-Simulator targets on Linux.
+still need validation on a Mac**. The shared Rust core is tested on Linux; its
+cryptography dependency requires the Apple SDK for iPhone and Simulator builds.
 
 ## Build on a Mac
 
@@ -65,6 +65,8 @@ measurement.
 | --- | --- | --- |
 | URL rules, QR, redirect consent and limits | Shared Rust | Shared Rust |
 | OISD, Tranco, certificate parsing, local GeoIP | Shared Rust | Shared Rust |
+| Embedded SCT signatures and history parsing | Shared Rust | Shared Rust |
+| Opt-in history, inclusion proofs and signed key updates | Shared Rust + HTTP adapter | Shared Rust + URLSession |
 | Browser discovery and launch | Desktop registrations | Chrome/Firefox schemes, native browser |
 | Clipboard and interface | GTK / desktop | UIKit / SwiftUI |
 | Network and TLS | Rust libraries / system roots | URLSession / iOS trust |
@@ -117,8 +119,9 @@ The privacy manifest declares local file metadata access and elapsed-time
 measurement. Opening or inspecting a LAN address can trigger iOS's local-network
 permission prompt.
 
-Optional online checks remain Linux-only until their disclosure, public-address
-validation and destination pinning can be preserved in the mobile adapter.
+Other online checks (RDAP, VirusTotal and online GeoIP) remain Linux-only until
+their disclosure, public-address validation and destination pinning can be
+preserved in the mobile adapter.
 Shared RDAP parsing and provider selection are already in Rust.
 
 Before distribution, run the native tests and check actual Safari sharing,
@@ -137,3 +140,16 @@ inspection must be restarted; it cannot silently resume a redirect.
 Authentication challenges are declined without sending credentials; HTTP 401
 remains a result. Servers that require a client certificate can still refuse the
 connection. Certificate and registry identity text strips control and bidi formatting.
+
+Certificate transparency uses the leaf and issuer from iOS's verified trust chain.
+The CT evidence is local; the separate certificate-history sheet names the initial
+hostname and provider before requesting anything. It uses an ephemeral bounded
+transfer, with no cookies, redirects or persistent report cache. Its optional API
+key stays in memory and is restricted to Cert Spotter; each next page needs a
+click. The separate inclusion sheet discloses the certificate-identifying hash
+before requesting a signed tree head and proof. **Local data → Update log keys**
+refreshes signed metadata without sharing an inspected link.
+Both interfaces use the same Rust protocol and verification rules; see the
+[CT limitations and data disclosure](reference.md#certificate-transparency).
+The shared cryptography dependency builds native code, so iOS cross-checks now
+require Apple's SDK and `xcrun` on macOS as well as the Rust target.

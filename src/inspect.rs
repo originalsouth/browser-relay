@@ -20,7 +20,9 @@ use std::{
 use url::Url;
 
 pub use browser_relay::Cancel;
-pub use browser_relay::certificate::{CertificateInfo, certificate_info};
+pub use browser_relay::certificate::CertificateInfo;
+#[cfg(test)]
+use browser_relay::certificate::certificate_info;
 pub use browser_relay::geo::Location;
 #[cfg(test)]
 use browser_relay::route::next_redirect;
@@ -44,7 +46,8 @@ pub enum Event {
     },
     Location(IpAddr, Result<Location>),
     Probe(IpAddr, Option<f64>),
-    PingUnavailable(IpAddr, String),
+    PingStarted(IpAddr),
+    PingFinished(IpAddr, Result<String>),
     Section(String, String),
     Peer(IpAddr),
     PublicHost(String),
@@ -295,7 +298,12 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
             .iter()
             .map(|ip| SocketAddr::new(*ip, url.port_or_known_default().unwrap()))
             .collect();
-        let builder = client_builder();
+        let chain = Arc::new(crate::ct_transport::Capture::default());
+        let builder = if url.scheme() == "https" {
+            client_builder().use_preconfigured_tls(crate::ct_transport::tls(chain.clone())?)
+        } else {
+            client_builder()
+        };
         let builder = if proxied {
             builder
         } else {
@@ -330,7 +338,13 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                 .ok_or_else(|| {
                     "Certificate details were not provided by this connection.".to_string()
                 })
-                .and_then(certificate_info)
+                .and_then(|der| {
+                    browser_relay::certificate::certificate_with_ct(
+                        der,
+                        chain.issuer_for(der).as_deref(),
+                        crate::ct_transport::log_path().ok().as_deref(),
+                    )
+                })
         });
         if let Some(result) = &certificate {
             section(
@@ -459,23 +473,16 @@ async fn inspect(link: &str, sender: &Sender<Event>, consent: Option<&Receiver<(
                 .unwrap_or_else(|e| e.clone()),
         );
         let _ = sender.send(Event::Location(ip, location));
-        if !proxied {
-            section(
-                sender,
-                &format!("Ping · {ip}"),
-                ping(ip, sender).await.unwrap_or_else(|e| {
-                    let _ = sender.send(Event::PingUnavailable(ip, e.clone()));
-                    e
-                }),
-            );
-        } else {
-            let _ = sender.send(Event::PingUnavailable(
-                ip,
-                "Skipped to respect proxy settings".into(),
-            ));
-        }
     }
     Ok(())
+}
+
+// Called only by the explicit per-peer confirmation action, never by inspection.
+pub fn probe_peer(ip: IpAddr, sender: &Sender<Event>, cancel: &Cancel) -> Result<String> {
+    if proxy_configured() {
+        return Err("Ping is disabled while a proxy is configured.".into());
+    }
+    run_async(cancel, ping(ip, sender))
 }
 
 async fn ping(ip: IpAddr, sender: &Sender<Event>) -> Result<String> {
@@ -929,6 +936,20 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_ping_sends_no_probes() {
+        let (sender, receiver) = mpsc::channel();
+        assert!(
+            probe_peer(
+                "127.0.0.1".parse().unwrap(),
+                &sender,
+                &Arc::new(AtomicBool::new(true))
+            )
+            .is_err()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn direct_check_does_not_follow_another_origin_or_offer_private_lookups() {
         let (url, server) = server(
             "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/do-not-contact?secret=hidden\r\nSet-Cookie: session=hidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -941,6 +962,13 @@ mod tests {
             &Arc::new(AtomicBool::new(false)),
         );
         let events: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                Event::Probe(..) | Event::PingStarted(..) | Event::PingFinished(..)
+            )),
+            "inspection must never start ICMP probes"
+        );
         assert!(events.iter().any(|e| matches!(e, Event::Redirect(_))));
         assert!(
             !events

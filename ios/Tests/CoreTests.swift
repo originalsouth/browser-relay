@@ -12,6 +12,22 @@ private actor InsightLoads {
 }
 
 final class CoreTests: XCTestCase {
+    func testCTDataSourcesAndHistoryPaginationStayInTheSharedCore() throws {
+        let sources: CTSources = try Core.call(["op": "ct_sources"])
+        XCTAssertEqual(URL(string: sources.list)?.host, "www.gstatic.com")
+        XCTAssertTrue(sources.disclosure.contains("No inspected hostname"))
+        let history: CertificateHistoryLookup = try Core.call(["op": "history_prepare", "host": "github.com", "after": "opaque&domain=other.example"])
+        let url = URLComponents(string: history.url)!
+        XCTAssertEqual(url.host, "api.certspotter.com")
+        XCTAssertEqual(url.queryItems?.filter { $0.name == "domain" }.map { $0.value }, ["github.com"])
+        XCTAssertTrue(history.authDisclosure.contains("account"))
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("[]".utf8).write(to: file)
+        let page: CertificateHistoryPage = try Core.call(["op": "history_result", "host": "github.com", "status": 200, "path": file.path])
+        XCTAssertNil(page.next)
+    }
+
     @MainActor
     func testUnchangedHostsReuseInsightsAndRestartRefreshesThem() async throws {
         let loads = InsightLoads()

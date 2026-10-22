@@ -7,6 +7,7 @@ struct TransferResult: Sendable {
     let milliseconds: Double
     let peer: String?
     let certificate: Data?
+    var issuerCertificate: Data? = nil
 }
 
 // OS boundary: a bounded, ephemeral request. Redirects are returned to Rust, never followed here.
@@ -23,21 +24,29 @@ final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var continuation: CheckedContinuation<TransferResult, Error>?
     private var response: HTTPURLResponse?
     private var certificate: Data?
+    private var issuerCertificate: Data?
     private var peer: String?
     private var received = 0
     private var limit = 0
     private var output: FileHandle?
     private var started = ProcessInfo.processInfo.systemUptime
 
-    func run(_ url: URL, method: String = "HEAD", limit: Int = 4096, to file: URL? = nil) async throws -> TransferResult {
-        try await withTaskCancellationHandler {
+    func run(_ url: URL, method: String = "HEAD", limit: Int = 4096, to file: URL? = nil, bearerToken: String? = nil) async throws -> TransferResult {
+        if let token = bearerToken {
+            guard url.scheme == "https", url.host == "api.certspotter.com", url.port == nil || url.port == 443,
+                  url.path == "/v1/issuances", url.user == nil, url.password == nil, url.fragment == nil else {
+                throw RelayError("API credentials are restricted to Cert Spotter's fixed HTTPS endpoint.")
+            }
+            let _: Empty = try Core.call(["op": "history_auth", "key": token])
+        }
+        return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                start(url, method: method, limit: limit, file: file, continuation: continuation)
+                start(url, method: method, limit: limit, file: file, bearerToken: bearerToken, continuation: continuation)
             }
         } onCancel: { self.cancel() }
     }
 
-    private func start(_ url: URL, method: String, limit: Int, file: URL?, continuation: CheckedContinuation<TransferResult, Error>) {
+    private func start(_ url: URL, method: String, limit: Int, file: URL?, bearerToken: String?, continuation: CheckedContinuation<TransferResult, Error>) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled else { continuation.resume(throwing: CancellationError()); return }
@@ -67,6 +76,7 @@ final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         self.session = session
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if let token = bearerToken, !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         request.setValue("BrowserRelay/0.2", forHTTPHeaderField: "User-Agent")
         session.dataTask(with: request).resume()
     }
@@ -135,6 +145,7 @@ final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         }
         if let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first {
             certificate = SecCertificateCopyData(leaf) as Data
+            if chain.count > 1 { issuerCertificate = SecCertificateCopyData(chain[1]) as Data }
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
@@ -176,6 +187,6 @@ final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         finish(.success(TransferResult(status: response.statusCode,
             location: response.value(forHTTPHeaderField: "Location"),
             milliseconds: max(0, ProcessInfo.processInfo.systemUptime - started) * 1000,
-            peer: peer, certificate: certificate)))
+            peer: peer, certificate: certificate, issuerCertificate: issuerCertificate)))
     }
 }
