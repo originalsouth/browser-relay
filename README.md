@@ -2,9 +2,9 @@
 
 **Your link. Your call.**
 
-A small, native Linux app that gives every link a pit stop. Open it in your
-favourite browser, copy it, send it to your phone with a QR code, or take a closer
-look before you visit. Written in Rust with GTK 4, dressed in dark violet.
+A small, native app for Linux and macOS that gives every link a pit stop. Open it
+in your favourite browser, copy it, send it to your phone with a QR code, or take a
+closer look before you visit. A shared Rust core, GTK 4 on Linux and SwiftUI on Mac.
 
 [![Browser Relay](assets/preview.png)](https://github.com/originalsouth/browser-relay)
 
@@ -74,20 +74,25 @@ are included, with opt-in AUR publishing. [Setup and install →](docs/archlinux
 
 ## macOS
 
-The new Mac client uses SwiftUI and the same Rust inspection core. It discovers
-installed browsers, handles links from `open`, and keeps copy, QR and inspection
-one click away. The screenshots above show the Linux interface.
+[Download a Mac build →](https://github.com/originalsouth/browser-relay/releases)
 
-On macOS 14 or later, with Xcode, Rust and XcodeGen installed:
+Grab `BrowserRelay-macos-universal.zip`, extract it and move `BrowserRelay.app`
+into Applications. One download works on Apple Silicon and Intel, on macOS 14 or
+later. Use the gear menu to make it your default browser.
+
+Every push to `main` gets a new tag, such as `v0.2.0-build.6`. Once both Mac test
+jobs pass, its ZIP and SHA-256 checksum appear in Releases. These are prereleases,
+ad-hoc signed and not Apple notarized; macOS may ask you to approve the app in
+Privacy & Security.
+
+Prefer to build it yourself? With Xcode, Rust and XcodeGen installed:
 
 ```sh
 ./macos/install.sh
 open -a "$HOME/Applications/BrowserRelay.app" 'https://github.com/originalsouth/browser-relay'
 ```
 
-Use the gear menu to make it your default browser. Prefer a download?
-[Releases](https://github.com/originalsouth/browser-relay/releases) get a universal
-Mac ZIP after each tested push to `main`. These are prereleases, ad-hoc signed
-and not Apple notarized. [Build notes and current differences →](docs/macos.md).
+The Mac client shares the Rust inspection core, with a native SwiftUI interface.
+The screenshots above show Linux. [Build notes and current differences →](docs/macos.md).
 
 [MIT licensed](LICENSE). For people who use more than one browser.
