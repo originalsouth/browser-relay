@@ -29,8 +29,17 @@ jobs:
           GTK_A11Y: none
           GDK_BACKEND: x11
           GSK_RENDERER: cairo
+          RELAY_SCREENSHOTS: ${{ runner.temp }}/relay-inspection
         run: |
           xvfb-run -a cargo test certificate_history_waits_for_explicit_confirmation -- --ignored --test-threads=1
           xvfb-run -a cargo test ping_requires_confirmation_for_each_peer -- --ignored --test-threads=1
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/reputation.py
+      - name: Upload inspection diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-inspection-diagnostics
+          path: ${{ runner.temp }}/relay-inspection/
+          if-no-files-found: ignore
+          retention-days: 7

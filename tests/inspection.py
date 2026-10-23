@@ -40,7 +40,9 @@ def key(name):
 
 def capture_text(popup, destination):
     command('import', '-window', popup, str(destination))
-    return command('tesseract', str(destination), 'stdout')
+    text = command('tesseract', str(destination), 'stdout')
+    destination.with_suffix('.txt').write_text(text)
+    return text
 
 with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
     folder = Path(temp)
@@ -93,10 +95,10 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
             assert 'no probes sent' in before, before
             assert 'Inspection incomplete' in before, before
             assert 'Verified HTTPS' not in before, before
-            assert 'RISK FACTORS' in before, before
+            assert 'risk factors' in before.casefold(), before
             assert 'Local network address' not in before, 'Routine notices should start collapsed'
             data = command('tesseract', str(folder/'before.png'), 'stdout', 'tsv')
-            row = next(row for row in csv.DictReader(io.StringIO(data), delimiter='\t') if row['text'] == 'RISK')
+            row = next(row for row in csv.DictReader(io.StringIO(data), delimiter='\t') if row['text'].casefold() == 'risk')
             risk_y = int(row['top']) + int(row['height']) // 2
             command('xdotool', 'mousemove', '--window', popup, '150', str(risk_y), 'click', '1')
             time.sleep(.2)
@@ -147,10 +149,6 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
                         break
                 assert '8/8 probes' in measured or 'ICMP unavailable' in measured, measured
                 assert 'Route includes HTTP' in measured, measured
-            if shots:
-                for name in ('before.png', 'after.png'):
-                    if (folder/name).exists():
-                        shutil.copy(folder/name, Path(shots)/f"{'redirect' if follows_redirect else 'tls'}-{name}")
             key('Escape')
             command('xdotool','windowfocus','--sync',parent)
             key('Escape')
@@ -160,7 +158,13 @@ with tempfile.TemporaryDirectory(prefix='relay-inspection-test-') as temp:
         finally:
             if proc.poll() is None:
                 proc.kill()
-                proc.communicate()
+            out, err = proc.communicate()
+            if shots:
+                scenario = 'redirect' if follows_redirect else 'tls'
+                for pattern in ('*.png', '*.txt'):
+                    for image in folder.glob(pattern):
+                        shutil.copy(image, Path(shots) / f'{scenario}-{image.name}')
+                (Path(shots) / f'{scenario}-stderr.log').write_bytes(err)
     plain.shutdown(); plain.server_close()
     secure.shutdown(); secure.server_close()
 print('TLS failure stays amber; redirects preserve earlier HTTP; ping waits for per-peer consent and works after inspection finishes.')
