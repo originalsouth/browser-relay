@@ -2,6 +2,7 @@ name: macOS
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -9,10 +10,32 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Preserve every main push, including pushes arriving while a build is queued.
+  group: macos-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
 jobs:
+  tag:
+    name: Tag main push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'originalsouth/browser-relay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test release automation
+        run: python3 tests/macos_release.py
+      - name: Tag this exact commit
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 macos/release.py tag
+
   build:
     name: Test on ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -72,3 +95,25 @@ jobs:
             macos/build/Release.log
           if-no-files-found: warn
           retention-days: 7
+
+  release:
+    name: Publish macOS prerelease
+    needs: [tag, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'originalsouth/browser-relay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: browser-relay-macos-universal
+          path: macos/build/dist
+      - name: Publish verified app and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.tag.outputs.tag }}
+        run: python3 macos/release.py publish

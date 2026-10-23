@@ -85,9 +85,9 @@ On macOS 14 or later, with Xcode, Rust and XcodeGen installed:
 open -a "$HOME/Applications/BrowserRelay.app" 'https://github.com/originalsouth/browser-relay'
 ```
 
-Use the gear menu to make it your default browser. The Mac build still needs
-native validation. The [macOS workflow](https://github.com/originalsouth/browser-relay/actions/workflows/macos.yml)
-tests both architectures and produces a universal app ZIP.
-[Build notes, CI downloads and current differences →](docs/macos.md).
+Use the gear menu to make it your default browser. Prefer a download?
+[Releases](https://github.com/originalsouth/browser-relay/releases) get a universal
+Mac ZIP after each tested push to `main`. These are prereleases, ad-hoc signed
+and not Apple notarized. [Build notes and current differences →](docs/macos.md).
 
 [MIT licensed](LICENSE). For people who use more than one browser.

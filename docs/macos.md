@@ -115,6 +115,7 @@ cargo test --locked --no-default-features --features apple --lib
 cargo clippy --locked --all-targets --all-features -- -D warnings
 python3 tests/macos_install.py
 python3 tests/macos_package.py
+python3 tests/macos_release.py
 ```
 
 Before calling this release-ready, test cold and warm `open` delivery, real browser
@@ -129,15 +130,22 @@ the shared Rust tests, Clippy and XCTest suite, then build and verify a universa
 fat-LTO release. The Apple Silicon job packages that app with `macos/package.sh`.
 Each job retains Xcode test results and logs for seven days, including failed runs.
 
-After **both jobs pass**, download `browser-relay-macos-universal` from the run’s
-Artifacts section. Extract the artifact, then verify its inner ZIP:
+Every push to `main` gets a tag such as `v0.2.0-build.42`: the Cargo version plus
+that workflow's run number. The tag points to the exact pushed commit; reruns reuse
+it. Both Mac jobs must pass before the ZIP and checksum are published as a
+[GitHub prerelease](https://github.com/originalsouth/browser-relay/releases).
+Failed builds keep their tag but publish no package. Main pushes do not cancel
+each other's builds. Branches, pull requests and manual runs only upload CI artifacts.
+
+Download `BrowserRelay-macos-universal.zip` and its `.sha256` file, then verify:
 
 ```sh
 shasum -a 256 -c BrowserRelay-macos-universal.zip.sha256
 ```
 
-Extract that ZIP and move `BrowserRelay.app` into Applications. The app and checksum
-are kept for 14 days. These are ad-hoc-signed test builds, **not Developer ID signed
-or notarized releases**; macOS may block a downloaded build. Build from source for
-local use, or approve a trusted test build through macOS Privacy & Security. The
-workflow does not require signing secrets, publish a release or change defaults.
+Extract the ZIP and move `BrowserRelay.app` into Applications. Release downloads
+remain available; CI artifacts expire after 14 days. These builds are ad-hoc signed,
+**not Developer ID signed or Apple notarized**; macOS may block a downloaded build.
+Build from source for local use, or approve a trusted build through macOS Privacy
+& Security. The workflow uses GitHub's built-in token to create tags and releases;
+no additional secret is needed. It does not change browser defaults.

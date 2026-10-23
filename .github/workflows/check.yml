@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tests/macos_install.py
           python3 tests/macos_package.py
+          python3 tests/macos_release.py
       - name: Local GUI privacy and layout regressions
         env:
           GTK_A11Y: none
