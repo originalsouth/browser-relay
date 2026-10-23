@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 private let accent = Color(red: 0.66, green: 0.51, blue: 1)
-private let background = Color(red: 0.055, green: 0.045, blue: 0.095)
+private let chooserBackground = Color(red: 0.055, green: 0.045, blue: 0.095)
 
 private enum Tool: String, Identifiable {
     case qr, inspect
@@ -39,7 +39,7 @@ struct ChooserView: View {
             footer
         }
         .padding(24).frame(minWidth: 392, minHeight: 380)
-        .background(background).preferredColorScheme(.dark).tint(accent)
+        .background(chooserBackground).preferredColorScheme(.dark).tint(accent)
         .sheet(item: $tool) { selected in
             if let request = model.request, let url = request.urls.first {
                 if selected == .qr {

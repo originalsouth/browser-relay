@@ -20,7 +20,7 @@ jobs:
     steps:
       - name: Install Arch build dependencies
         run: |
-          pacman -Syu --noconfirm --needed git rust gtk4 pkgconf ca-certificates hicolor-icon-theme desktop-file-utils namcap
+          pacman -Syu --noconfirm --needed git openssh rust gtk4 pkgconf ca-certificates hicolor-icon-theme desktop-file-utils namcap
           useradd --create-home builder
       - uses: actions/checkout@v7
         with:
