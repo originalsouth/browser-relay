@@ -13,7 +13,7 @@ stage=$(mktemp -d "$PWD/build/package.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 # Package a copy so diagnostics still describe the original build products.
 ditto "$source_app" "$stage/BrowserRelay.app"
-lipo -verify_arch arm64 x86_64 "$stage/BrowserRelay.app/Contents/MacOS/BrowserRelay"
+lipo "$stage/BrowserRelay.app/Contents/MacOS/BrowserRelay" -verify_arch arm64 x86_64
 # CI artifacts are test builds: ad-hoc signing, no Developer ID secrets or notarization.
 codesign --force --sign - --options runtime "$stage/BrowserRelay.app"
 codesign --verify --deep --strict "$stage/BrowserRelay.app"

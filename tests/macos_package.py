@@ -25,7 +25,12 @@ class MacPackageTests(unittest.TestCase):
         app.mkdir(parents=True)
         (app / "payload").write_bytes(b"fixture application")
         self.script("uname", "echo Darwin\n")
-        self.script("lipo", 'exit "${FAIL_ARCH:-0}"\n')
+        # Apple's lipo consumes every argument after -verify_arch as an arch.
+        # Reject an input path in that list, even when the fake tool would succeed.
+        self.script("lipo", '''
+[[ $# == 4 && $1 == */Contents/MacOS/BrowserRelay && $2 == -verify_arch && $3 == arm64 && $4 == x86_64 ]]
+exit "${FAIL_ARCH:-0}"
+''')
         self.script("codesign", 'exit "${FAIL_SIGN:-0}"\n')
         self.script("ditto", '''
 if [[ $1 == -c ]]; then

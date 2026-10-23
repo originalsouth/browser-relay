@@ -12,4 +12,4 @@ xcodebuild test -project BrowserRelay.xcodeproj -scheme BrowserRelay \
 xcodebuild build -project BrowserRelay.xcodeproj -scheme BrowserRelay -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath build/Release \
     ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/Release.log
-lipo -verify_arch arm64 x86_64 build/Release/Build/Products/Release/BrowserRelay.app/Contents/MacOS/BrowserRelay
+lipo build/Release/Build/Products/Release/BrowserRelay.app/Contents/MacOS/BrowserRelay -verify_arch arm64 x86_64
