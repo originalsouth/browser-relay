@@ -16,7 +16,7 @@ required-features = ["desktop"]
 [features]
 default = ["desktop"]
 desktop = ["dep:gtk", "dep:gio-unix", "dep:reqwest", "dep:tokio", "dep:hickory-resolver", "dep:surge-ping", "dep:maxminddb", "dep:rustls", "dep:rustls-native-certs"]
-mobile = ["dep:maxminddb"]
+apple = ["dep:maxminddb"]
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", optional = true }

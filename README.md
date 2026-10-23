@@ -41,7 +41,7 @@ including the link's path and query; optional services show what they will recei
 before you confirm. No telemetry. Rankings and blocklists are clues, not a promise
 that a site is safe. [How the checks and privacy controls work →](docs/reference.md#inspection-privacy)
 
-## Get it running
+## Get it running on Linux
 
 You'll need Rust/Cargo, `pkg-config`, GTK 4 development files (`libgtk-4-dev` on
 Debian/Ubuntu; `gtk4` on Arch), Bash and `xdg-utils`. For copying, install `wl-copy`
@@ -68,8 +68,26 @@ browser-relay --update-lists
 GeoIP uses a local MMDB database. Point `BROWSER_RELAY_GEOIP_DB` at yours;
 [setup, data sources and developer notes](docs/reference.md) cover the rest.
 
-An **iOS companion is in development**, with native browsing, Share-menu inspection
-and the same Rust risk checks. It still needs testing on a Mac and device.
-[Build notes and default-browser support →](docs/ios.md)
+**On Arch:** an AUR-ready `browser-relay-git` recipe and automated package builds
+are included, with opt-in AUR publishing. [Setup and install →](docs/archlinux.md)
+(not yet published to AUR).
+
+## macOS
+
+The new Mac client uses SwiftUI and the same Rust inspection core. It discovers
+installed browsers, handles links from `open`, and keeps copy, QR and inspection
+one click away. The screenshots above show the Linux interface.
+
+On macOS 14 or later, with Xcode, Rust and XcodeGen installed:
+
+```sh
+./macos/install.sh
+open -a "$HOME/Applications/BrowserRelay.app" 'https://github.com/originalsouth/browser-relay'
+```
+
+Use the gear menu to make it your default browser. The Mac build still needs
+native validation. The [macOS workflow](https://github.com/originalsouth/browser-relay/actions/workflows/macos.yml)
+tests both architectures and produces a universal app ZIP.
+[Build notes, CI downloads and current differences →](docs/macos.md).
 
 [MIT licensed](LICENSE). For people who use more than one browser.

@@ -15,9 +15,15 @@ jobs:
         run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo test --locked
-      - run: cargo test --locked --no-default-features --features mobile --lib
+      - run: cargo test --locked --no-default-features --features apple --lib
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo build --locked
+      - name: AUR publishing regression tests
+        run: python3 tests/aur_publish.py
+      - name: Mac installer and packaging tests
+        run: |
+          python3 tests/macos_install.py
+          python3 tests/macos_package.py
       - name: Local GUI privacy and layout regressions
         env:
           GTK_A11Y: none
@@ -28,15 +34,3 @@ jobs:
           xvfb-run -a cargo test ping_requires_confirmation_for_each_peer -- --ignored --test-threads=1
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/reputation.py
-  ios:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install build tools
-        run: |
-          brew install xcodegen
-          rustup update stable
-          rustup default stable
-      - run: ./ios/build-rust.sh
-      - run: cd ios && xcodegen generate
-      - run: ./ios/test.sh

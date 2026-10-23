@@ -1,0 +1,74 @@
+name: macOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test on ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: |
+          brew install xcodegen
+          rustup update stable
+          rustup default stable
+          rustup component add rustfmt clippy
+      - name: Check shared Rust core
+        run: |
+          cargo fmt --check
+          cargo test --locked --no-default-features --features apple --lib
+          cargo clippy --locked --no-default-features --features apple --lib -- -D warnings
+      - name: Build universal Rust library and icons
+        run: ./macos/build-rust.sh
+      - name: Generate Xcode project
+        working-directory: macos
+        run: xcodegen generate
+      - name: Native tests and universal release build
+        run: ./macos/test.sh
+      - name: Package universal app
+        if: matrix.arch == 'arm64'
+        run: ./macos/package.sh
+      - name: Upload universal app and checksum
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-relay-macos-universal
+          path: |
+            macos/build/dist/BrowserRelay-macos-universal.zip
+            macos/build/dist/BrowserRelay-macos-universal.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-test-results-${{ matrix.arch }}
+          path: |
+            macos/build/TestResults.xcresult
+            macos/build/Test.log
+            macos/build/Release.log
+          if-no-files-found: warn
+          retention-days: 7

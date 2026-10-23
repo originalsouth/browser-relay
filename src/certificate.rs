@@ -1,4 +1,4 @@
-//! Certificate identity parsing, shared with the iOS inspector.
+//! Certificate identity parsing, shared with the macOS inspector.
 use crate::Result;
 
 #[derive(Debug)]

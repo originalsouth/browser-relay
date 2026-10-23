@@ -1,11 +1,12 @@
 import SwiftUI
-import UIKit
+import AppKit
 
 private let violet = Color(red: 0.66, green: 0.51, blue: 1)
 private let panel = Color(red: 0.10, green: 0.09, blue: 0.16)
 
 struct RelayView: View {
     let link: String
+    var startImmediately = false
     @StateObject private var inspection = InspectionModel()
     @State private var showQR = false
     @State private var copied = false
@@ -23,7 +24,8 @@ struct RelayView: View {
                     .background(panel, in: RoundedRectangle(cornerRadius: 18))
                 HStack(spacing: 12) {
                     Button {
-                        UIPasteboard.general.string = link
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(link, forType: .string)
                         copied = true
                     } label: { Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "doc.on.doc") }
                     Button { showQR = true } label: { Label("Show QR", systemImage: "qrcode") }
@@ -46,12 +48,18 @@ struct RelayView: View {
         .scrollBounceBehavior(.basedOnSize)
         .background(Color(red: 0.055, green: 0.045, blue: 0.095))
         .preferredColorScheme(.dark)
-        .navigationTitle("Browser Relay").navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showQR) { QRView(link: link) }
+        .navigationTitle("Browser Relay")
+        .sheet(isPresented: $showQR) { QRView(link: link).frame(width: 430, height: 510) }
         .sheet(isPresented: $showHistory) {
-            CertificateHistoryView(host: URL(string: link)?.host ?? "")
+            CertificateHistoryView(host: URL(string: link)?.host ?? "").frame(width: 600, height: 520)
         }
-        .sheet(item: $selectedProof) { ProofView(proof: $0) }
+        .sheet(item: $selectedProof) { ProofView(proof: $0).frame(width: 600, height: 480) }
+        .onAppear {
+            if startImmediately && !inspected {
+                inspected = true
+                inspection.start(link)
+            }
+        }
         .onDisappear { inspection.cancel() }
     }
 
@@ -64,7 +72,7 @@ struct RelayView: View {
             }
             if let state = inspection.decision, state.complete {
                 info(state.encrypted ? "Encrypted connection" : "Unencrypted hop in route",
-                     state.encrypted ? "TLS accepted by iOS. This does not establish the site's trustworthiness." : "An HTTP request was sent without encryption.",
+                     state.encrypted ? "TLS accepted by macOS. This does not establish the site's trustworthiness." : "An HTTP request was sent without encryption.",
                      symbol: state.encrypted ? "lock.shield" : "lock.open", warning: !state.encrypted)
             } else {
                 info(inspection.busy ? "Checking the destination…" : "Inspection incomplete",
@@ -150,8 +158,8 @@ struct RelayView: View {
             }
             DisclosureGroup("Details & Privacy") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Inspection uses iOS DNS and TLS through an ephemeral URLSession. No cookies, saved credentials, page scripts, Referer header or automatic redirects. The destination and your DNS/network provider can observe the request. Certificate network fetching is disabled for inspection. Embedded CT signatures are checked locally using signed log metadata; this does not prove inclusion or site safety. Certificate history requires a separate confirmation and sends the initial hostname to SSLMate Cert Spotter; an optional API key identifies your account to that service. Further pages need another click. Log inclusion has its own confirmation and sends a certificate-identifying hash to the named log. Log-key updates download two public files from Google without sharing an inspected address. A CDN, proxy or VPN may obscure the server location.")
-                    Text("The browser is separate: visiting a page runs its content normally, including third-party resources. iOS does not expose desktop browser discovery, direct DNS records or the Linux ICMP probe here. Optional online reputation and RDAP checks remain available on Linux only.")
+                    Text("Inspection uses macOS DNS and TLS through an ephemeral URLSession. No cookies, saved credentials, page scripts, Referer header or automatic redirects. The destination and your DNS/network provider can observe the request. Certificate network fetching is disabled for inspection. Embedded CT signatures are checked locally using signed log metadata; this does not prove inclusion or site safety. Certificate history requires a separate confirmation and sends the initial hostname to SSLMate Cert Spotter; an optional API key identifies your account to that service. Further pages need another click. Log inclusion has its own confirmation and sends a certificate-identifying hash to the named log. Log-key updates download two public files from Google without sharing an inspected address. A CDN, proxy or VPN may obscure the server location.")
+                    Text("Opening in a browser runs the page normally, including third-party resources. Direct DNS records, ICMP ping, online reputation and RDAP controls are currently available in the Linux interface only.")
                     if let local = inspection.insights {
                         Text(local.oisd.detail)
                         Text(local.tranco.detail)
@@ -235,7 +243,7 @@ struct QRView: View {
                     Text("Copy the link instead. The address is never shortened or sent to a QR service.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
-            }.padding(28).navigationTitle("Show QR code").navigationBarTitleDisplayMode(.inline)
+            }.padding(28).navigationTitle("Show QR code")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)
     }
@@ -342,7 +350,7 @@ private struct CertificateHistoryView: View {
                         Text(lookup.disclosure).font(.callout)
                         Text(lookup.authDisclosure).font(.caption)
                         SecureField("API key (optional, not saved)", text: $key)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(busy)
+                            .autocorrectionDisabled().disabled(busy)
                         Button(cursor == nil ? "Look up first page" : "Load next page") {
                             busy = true
                             error = nil
@@ -356,7 +364,7 @@ private struct CertificateHistoryView: View {
                 }.padding(20)
             }
             .navigationTitle("Certificate history")
-            .navigationBarTitleDisplayMode(.inline)
+
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .preferredColorScheme(.dark)
@@ -414,7 +422,7 @@ private struct ProofView: View {
                     if let result { Text(result).textSelection(.enabled) }
                     if let error { Text(error).foregroundStyle(.orange) }
                 }.padding(20)
-            }.navigationTitle("Log inclusion").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle("Log inclusion")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)
         .task {

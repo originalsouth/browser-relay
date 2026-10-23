@@ -205,7 +205,7 @@ stale, future-dated or older updates are rejected before atomic replacement.
 A file lock prevents concurrent updates from rolling back the cache. The signed
 cache is revalidated when changed, with bundled keys as a fallback. Set
 `BROWSER_RELAY_CT_DIR` to override its desktop directory; otherwise it uses the
-usual Browser Relay data directory. iOS stores it in the shared app container and
+usual Browser Relay data directory. macOS stores it in Application Support/BrowserRelay and
 updates from **Local data**. Reopen inspection after updating. There are no
 background refreshes. Results show the snapshot date and warn after 90 days.
 A publisher signing-key change requires an application update.
@@ -221,7 +221,7 @@ that a log-entry hash can identify the certificate and its hostnames. Two bounde
 HTTPS requests fetch a tree head and an audit path, each capped at 64 KiB. Rust
 verifies the tree-head signature and timestamp, leaf index, Merkle path and signed
 root. No redirects, retries, cookies or API keys are used. Desktop requests pin
-public log addresses and are disabled for proxy/private destinations. iOS uses
+public log addresses and are disabled for proxy/private destinations. macOS uses
 its ephemeral system transport. An unavailable proof is not a safety verdict:
 new entries may still be awaiting incorporation, and logs can be unavailable.
 Tiled-log inclusion proofs, consistency/split-view audits and full browser CT
@@ -233,7 +233,7 @@ includes the subdomain; no path, query or fragment is sent. The provider sees
 the hostname and connection IP. Results stay in memory, with no persistent
 history cache. Matching wildcard certificates are included; unrelated subdomains
 are not requested. Desktop history lookups are disabled with a proxy or private
-initial destination; iOS uses its ordinary ephemeral system transport.
+initial destination; macOS uses its ordinary ephemeral system transport.
 
 An optional masked **API key** field supports account-backed access. The key is
 held only in memory for the current panel and sent as a sensitive Bearer header
@@ -371,15 +371,15 @@ Linux's GTK interface and desktop integration live in `main.rs`, `browser.rs`,
 
 `src/lib.rs` exposes the common Rust core: URL rules, redirect consent and limits,
 certificate, CT and RDAP parsing, QR generation, GeoIP, packed domain indexes, reputation
-assessments and atomic caches. Linux uses it directly; the [iOS app and Share
-extension](ios.md) use the C/JSON boundary in `mobile.rs`. UI, clipboard, browser
+assessments and atomic caches. Linux uses it directly; the [macOS app](macos.md)
+uses the C/JSON boundary in `apple.rs`. UI, clipboard, browser
 launching, container paths and network transport stay at the platform boundary.
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
-cargo test --no-default-features --features mobile --lib
+cargo test --no-default-features --features apple --lib
 cargo audit
 cargo audit --file fuzz/Cargo.lock
 shellcheck install.sh uninstall.sh

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn data the inspector already collects (route, certificates, local Tranco index) into explainable, offline risk factors. Present them so a non-expert understands within two seconds what to worry about and what to do, on desktop and iOS.
+**Goal:** Turn data the inspector already collects (route, certificates, local Tranco index) into explainable, offline risk factors. Present them so a non-expert understands within two seconds what to worry about and what to do, on desktop and macOS.
 
-**Architecture:** Two new pure modules in the shared library: `lookalike` (TR39 confusable skeletons + edit distance against Tranco top-10k registered domains) and `risk` (`Facts` → `Vec<Factor>`, no I/O, plus presentation helpers shared by both UIs). The desktop worker (`inspect.rs`) accumulates `Facts` per hop and sends `Event::Risk`. `tranco.rs` caches the `BrandIndex` beside the cached `Rankings`. The inspector shows a top-of-window RISK FACTORS card and hands warnings back to the chooser on close. iOS gets a `"risk"` bridge op.
+**Architecture:** Two new pure modules in the shared library: `lookalike` (TR39 confusable skeletons + edit distance against Tranco top-10k registered domains) and `risk` (`Facts` → `Vec<Factor>`, no I/O, plus presentation helpers shared by both UIs). The desktop worker (`inspect.rs`) accumulates `Facts` per hop and sends `Event::Risk`. `tranco.rs` caches the `BrandIndex` beside the cached `Rankings`. The inspector shows a top-of-window RISK FACTORS card and hands warnings back to the chooser on close. macOS gets a `"risk"` bridge op.
 
 **Tech Stack:** Rust 2024, `url`, `psl` (via `registration::registered_domain`), new deps `unicode-security 0.1` (TR39 skeleton) and `idna 1.1` (already in `Cargo.lock` through `url`), GTK 4, SwiftUI.
 
@@ -14,8 +14,8 @@
 
 - No network access in `lookalike` or `risk`; no new requests anywhere in this plan.
 - No aggregate score or "safe" wording. The empty, finished state reads exactly: `No risk factors found · trust unknown`. Never use green for risk output.
-- Core modules compile under both `--features desktop` (default) and `--no-default-features --features mobile`.
-- CI gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo test --no-default-features --features mobile --lib`.
+- Core modules compile under both `--features desktop` (default) and `--no-default-features --features apple`.
+- CI gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo test --no-default-features --features apple --lib`.
 - Commit messages: no `Co-Authored-By` or "Generated with" lines (user preference).
 - Untrusted text (hostnames, query keys) reaches titles only after URL parsing (ASCII/punycode) or via a fixed allowlist. Any text placed in Pango markup goes through `glib::markup_escape_text`.
 - Match the codebase style: terse `//!` module docs, short comments only where non-obvious, `crate::Result<T> = Result<T, String>`.
@@ -72,7 +72,7 @@ The risk card is the answer to the question the user opened the inspector for ("
 | `#decbff` | notice | 10.40:1 | 11.09:1 |
 | `#aaa1ba` | none / muted | 6.29:1 | 6.70:1 |
 
-**iOS parity**
+**macOS parity**
 15. The same order and copy. A "Risk factors" panel appears above the list tiles, with a `DisclosureGroup` per factor (warnings expanded) and SF Symbols `exclamationmark.octagon.fill` / `exclamationmark.triangle.fill` / `info.circle`. The comparison uses `AttributedString`, with the highlight span computed in Rust. Each row has an `accessibilityLabel`, and text uses Dynamic Type styles only.
 
 ### Copy table (source of truth for Task 2 strings)
@@ -107,8 +107,8 @@ The risk card is the answer to the question the user opened the inspector for ("
 | `src/inspector_ui.rs` | RISK FACTORS card, rows, comparison, states, shield swap, list-update recompute, `on_close` callback |
 | `src/ui.rs` | chooser status carry-over |
 | `assets/style.css` | `.risk-*` classes |
-| `src/mobile.rs` | `"risk"` op; certificate JSON gains `notBefore/notAfter` |
-| `ios/Shared/*.swift`, `ios/Tests/CoreTests.swift` | decode and show factors |
+| `src/apple.rs` | `"risk"` op; certificate JSON gains `notBefore/notAfter` |
+| `macos/Shared/*.swift`, `macos/Tests/CoreTests.swift` | decode and show factors |
 | `tests/inspection.py` | OCR assertions for the card |
 | `docs/reference.md`, `README.md` | document factors, UX states and measured rates |
 
@@ -391,9 +391,9 @@ impl BrandIndex {
 Run: `cargo test --lib lookalike entries_expose`
 Expected: all PASS. TR39 maps `m`→`rn`, so `microsoft` and `rnicrosoft` share the skeleton `rnicrosoft` (verified with `unicode-security 0.1.2` on 2026-10-19). If a later 0.1.x changes the table, drop that case and note it in the commit message; don't add a hand-written mapping.
 
-- [ ] **Step 6: Check the mobile build and lints**
+- [ ] **Step 6: Check the Apple-core build and lints**
 
-Run: `cargo test --no-default-features --features mobile --lib lookalike && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --check`
+Run: `cargo test --no-default-features --features apple --lib lookalike && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --check`
 Expected: PASS, no warnings.
 
 - [ ] **Step 7: Commit**
@@ -611,7 +611,7 @@ Prepend to `src/risk.rs`:
 //! Explainable risk factors from the observed route and local indexes. No
 //! network access and no score: each factor states its evidence and what to
 //! do, and an empty list never means safe. Presentation helpers here are
-//! shared by the GTK and iOS interfaces so both read the same.
+//! shared by the GTK and macOS interfaces so both read the same.
 use crate::{
     domain_list::Rankings,
     link::{host, public_ip, public_name},
@@ -902,7 +902,7 @@ fn certificate_age(name: &str, validity: Validity, now: i64, factors: &mut Vec<F
     ));
 }
 
-/// Plain-text rendering for the details log and the iOS bridge.
+/// Plain-text rendering for the details log and the macOS bridge.
 pub fn detail(factors: &[Factor]) -> String {
     if factors.is_empty() {
         return "None in the observed route. Offline checks only; this does not establish that the site is safe.".into();
@@ -979,9 +979,9 @@ Fix the `titles_follow_the_copy_rules` capitalisation assertion if it proves awk
 Run: `cargo test --lib risk::`
 Expected: all PASS. Expected orderings come from the stable sort over insertion order: host pass, then cross-site, then hops, then refused.
 
-- [ ] **Step 5: Lints and mobile build**
+- [ ] **Step 5: Lints and Apple-core build**
 
-Run: `cargo test --no-default-features --features mobile --lib risk:: && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt`
+Run: `cargo test --no-default-features --features apple --lib risk:: && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -1557,13 +1557,13 @@ git commit -m "Keep inspection warnings visible in the chooser after closing"
 
 ---
 
-### Task 6: iOS bridge and view
+### Task 6: macOS bridge and view
 
 Implements UX Specification item 15.
 
 **Files:**
-- Modify: `src/mobile.rs` (`request` match, new `local_risk` beside `local_insights`, `"certificate"` op JSON, tests)
-- Modify: `ios/Shared/Core.swift`, `ios/Shared/InspectionModel.swift`, `ios/Shared/RelayView.swift`, `ios/Tests/CoreTests.swift`
+- Modify: `src/apple.rs` (`request` match, new `local_risk` beside `local_insights`, `"certificate"` op JSON, tests)
+- Modify: `macos/Shared/Core.swift`, `macos/Shared/InspectionModel.swift`, `macos/Shared/RelayView.swift`, `macos/Tests/CoreTests.swift`
 
 **Interfaces:**
 - Consumes: `risk::{Facts, Hop, Validity, Context, assess, detail, summary, differing_span}`, `BrandIndex::build`, `Rankings::read_bounded`, `read_index`, `LOCAL_WORK`.
@@ -1574,7 +1574,7 @@ Implements UX Specification item 15.
 ```rust
     #[test]
     fn risk_op_uses_local_rankings_and_bounds_hops() {
-        let root = std::env::temp_dir().join(format!("relay-mobile-risk-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("relay-apple-risk-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let ranks = Rankings::parse("1,paypal.com", "TEST", "2026-10-15T00:00:00Z", 1).unwrap();
         fs::write(root.join("tranco.bin"), ranks.encode()).unwrap();
@@ -1588,7 +1588,7 @@ Implements UX Specification item 15.
         assert_eq!(report["lookalikes"], true);
         let many = vec![hop; crate::route::MAX_HOPS + 1];
         assert!(request(&json!({"op":"risk","directory":root,"link":"https://paypa1.com/","hops":many})).is_err());
-        let empty = std::env::temp_dir().join(format!("relay-mobile-risk-empty-{}", std::process::id()));
+        let empty = std::env::temp_dir().join(format!("relay-apple-risk-empty-{}", std::process::id()));
         fs::create_dir_all(&empty).unwrap();
         let report = request(&json!({"op":"risk","directory":empty,"link":"https://paypa1.com/","hops":[]})).unwrap();
         assert_eq!(report["lookalikes"], false);
@@ -1599,7 +1599,7 @@ Implements UX Specification item 15.
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cargo test --no-default-features --features mobile --lib risk_op_uses`
+Run: `cargo test --no-default-features --features apple --lib risk_op_uses`
 Expected: FAIL: unknown op.
 
 - [ ] **Step 3: Implement**
@@ -1670,10 +1670,10 @@ Arm in `request` (resolve `directory` the same way the `"insights"` arm does):
 
 - [ ] **Step 4: Run Rust tests**
 
-Run: `cargo test --no-default-features --features mobile --lib && cargo clippy --all-targets --all-features -- -D warnings`
+Run: `cargo test --no-default-features --features apple --lib && cargo clippy --all-targets --all-features -- -D warnings`
 Expected: PASS.
 
-- [ ] **Step 5: Swift** (requires macOS; on Linux, rely on the CI `ios` job)
+- [ ] **Step 5: Swift** (requires macOS; on Linux, rely on the CI `macos` workflow)
 
 `Core.swift`. Replace the `Certificate` line and add:
 
@@ -1817,8 +1817,8 @@ Rust counts Unicode scalar values, while Swift's `Array(String)` gives grapheme 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/mobile.rs ios/Shared/Core.swift ios/Shared/InspectionModel.swift ios/Shared/RelayView.swift ios/Tests/CoreTests.swift
-git commit -m "Show risk factors in the iOS companion"
+git add src/apple.rs macos/Shared/Core.swift macos/Shared/InspectionModel.swift macos/Shared/RelayView.swift macos/Tests/CoreTests.swift
+git commit -m "Show risk factors in the macOS companion"
 ```
 
 If no Mac is available, say in the PR description that the Swift changes are unverified locally and rely on CI.
@@ -1950,7 +1950,7 @@ Also replace `assets/inspection.png` with a new screenshot showing the card. Use
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
-cargo test --no-default-features --features mobile --lib
+cargo test --no-default-features --features apple --lib
 cargo audit
 xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/inspection.py
 xvfb-run -a -s '-screen 0 1280x1024x24' python3 tests/gui.py
@@ -1969,7 +1969,7 @@ git commit -m "Verify the risk card, measure false positives and document the ch
 
 ## Self-Review Notes
 
-- UX Specification coverage: placement, summary and shield (1–3) → T4 Steps 3–4; rows, disclosure, comparison and stability (4–7) → T4 Step 3; states table → `risk::summary` (T2) + T4 Step 6; missing index (8) → T4 Steps 4–5; copy rules (9–11) → T2 Copy table and tests; chooser (12) → T2 `chooser_note` + T5; accessibility (13–14) → T4 Step 3, CSS, T7 Step 2; iOS (15) → T6.
-- Roadmap Phase 1 coverage: all factors (T1, T2), desktop (T3–T5), iOS (T6), harness and published rates (T7). Domain age is deliberately deferred to Phase 4, since RDAP is opt-in.
+- UX Specification coverage: placement, summary and shield (1–3) → T4 Steps 3–4; rows, disclosure, comparison and stability (4–7) → T4 Step 3; states table → `risk::summary` (T2) + T4 Step 6; missing index (8) → T4 Steps 4–5; copy rules (9–11) → T2 Copy table and tests; chooser (12) → T2 `chooser_note` + T5; accessibility (13–14) → T4 Step 3, CSS, T7 Step 2; macOS (15) → T6.
+- Roadmap Phase 1 coverage: all factors (T1, T2), desktop (T3–T5), macOS (T6), harness and published rates (T7). Domain age is deliberately deferred to Phase 4, since RDAP is opt-in.
 - Names checked across tasks: `Facts::new`, `Hop { url, status, validity }`, `Validity { not_before, not_after }`, `Factor { id, severity, title, evidence, compare }`, `Context { rankings, brands }`, `assess`, `detail`, `summary`, `differing_span`, `chooser_note`, `Severity::{label, word}`, `BrandIndex::{build, check}`, `Rankings::{entries, decode}`, `tranco::risk -> (Vec<Factor>, bool)`, `Event::Risk { facts, factors, lookalikes }`, `RiskView::{update, finish}`, `show(.., on_close)`.
 - Known judgement calls for the implementer: icon names depend on the installed icon theme. `dialog-warning-symbolic` and `dialog-information-symbolic` exist in Adwaita; check `emblem-default-symbolic` renders, or use `dialog-information-symbolic` for notices too and rely on the word and colour to tell them apart.

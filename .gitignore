@@ -1,5 +1,11 @@
 /target/
-/ios/build/
-/ios/*.xcodeproj/
-/ios/*.xcworkspace/
+/macos/build/
+/macos/*.xcodeproj/
+/macos/*.xcworkspace/
 .DS_Store
+/packaging/aur/browser-relay-git/src/
+/packaging/aur/browser-relay-git/pkg/
+/packaging/aur/browser-relay-git/browser-relay/
+/packaging/aur/browser-relay-git/*.pkg.tar.*
+/packaging/aur/browser-relay-git/*.src.tar.*
+/packaging/aur/browser-relay-git/*.log

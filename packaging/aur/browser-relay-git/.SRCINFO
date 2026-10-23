@@ -1,0 +1,35 @@
+pkgbase = browser-relay-git
+	pkgdesc = Choose a browser, copy a link, or inspect its destination
+	pkgver = 0.2.0.r12.ge0c3130
+	pkgrel = 1
+	url = https://github.com/originalsouth/browser-relay
+	arch = x86_64
+	license = MIT
+	checkdepends = desktop-file-utils
+	makedepends = cargo
+	makedepends = git
+	makedepends = pkgconf
+	depends = gtk4
+	depends = glib2
+	depends = glibc
+	depends = libgcc
+	depends = cairo
+	depends = pango
+	depends = gdk-pixbuf2
+	depends = ca-certificates
+	depends = hicolor-icon-theme
+	optdepends = wl-clipboard: copying links on Wayland
+	optdepends = xclip: copying links on X11
+	optdepends = xsel: alternative clipboard helper for X11
+	optdepends = zenity: fallback graphical chooser
+	optdepends = xdg-utils: setting your default browser
+	provides = browser-relay
+	conflicts = browser-relay
+	options = !lto
+	options = !debug
+	source = browser-relay::git+https://github.com/originalsouth/browser-relay.git#branch=main
+	source = browser-relay.desktop
+	sha256sums = SKIP
+	sha256sums = f1e7c357d150e0a2e6efa302f90e32fe30627607a20a7db299137187886a7523
+
+pkgname = browser-relay-git

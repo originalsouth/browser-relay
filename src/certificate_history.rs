@@ -1,4 +1,4 @@
-//! Opt-in Cert Spotter protocol and disclosure shared by desktop and iOS.
+//! Opt-in Cert Spotter protocol and disclosure shared by desktop and macOS.
 use crate::{Result, display_text::clean, link::public_name};
 use serde_json::Value;
 use url::Url;

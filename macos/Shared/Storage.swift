@@ -1,17 +1,11 @@
 import Foundation
 
-// Container discovery belongs to iOS; formats, parsing and atomic cache replacement belong to Rust.
+// Application Support discovery belongs to macOS; formats, parsing and atomic cache replacement belong to Rust.
 enum Storage {
     static func directory() throws -> URL {
         let manager = FileManager.default
-        let base: URL
-        if let group = Bundle.main.object(forInfoDictionaryKey: "RelayAppGroup") as? String,
-           let container = manager.containerURL(forSecurityApplicationGroupIdentifier: group) {
-            base = container
-        } else {
-            base = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
+        let base = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                    appropriateFor: nil, create: true)
-        }
         let root = base.appendingPathComponent("BrowserRelay", isDirectory: true)
         try manager.createDirectory(at: root, withIntermediateDirectories: true)
         var excluded = root

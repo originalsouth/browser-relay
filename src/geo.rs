@@ -1,4 +1,4 @@
-//! Local MMDB lookup shared by the desktop and mobile storage adapters.
+//! Local MMDB lookup shared by the Linux and macOS storage adapters.
 use crate::Result;
 use serde_json::Value;
 use std::net::IpAddr;

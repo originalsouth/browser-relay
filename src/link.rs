@@ -1,4 +1,4 @@
-//! URL validation and disclosure rules shared by desktop and mobile.
+//! URL validation and disclosure rules shared by Linux and macOS.
 use crate::Result;
 use std::net::IpAddr;
 use url::Url;

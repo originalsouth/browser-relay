@@ -1,0 +1,69 @@
+# Maintainer: originalsouth <https://github.com/originalsouth>
+pkgname=browser-relay-git
+pkgver=0.2.0.r12.ge0c3130
+pkgrel=1
+pkgdesc='Choose a browser, copy a link, or inspect its destination'
+arch=('x86_64')
+url='https://github.com/originalsouth/browser-relay'
+license=('MIT')
+depends=('gtk4' 'glib2' 'glibc' 'libgcc' 'cairo' 'pango' 'gdk-pixbuf2'
+         'ca-certificates' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'pkgconf')
+checkdepends=('desktop-file-utils')
+optdepends=('wl-clipboard: copying links on Wayland'
+            'xclip: copying links on X11'
+            'xsel: alternative clipboard helper for X11'
+            'zenity: fallback graphical chooser'
+            'xdg-utils: setting your default browser')
+provides=('browser-relay')
+conflicts=('browser-relay')
+# Avoid C LTO in ring; Rust still uses fat LTO. Do not create an empty debug package.
+options=('!lto' '!debug')
+source=('browser-relay::git+https://github.com/originalsouth/browser-relay.git#branch=main'
+        'browser-relay.desktop')
+sha256sums=('SKIP'
+            'f1e7c357d150e0a2e6efa302f90e32fe30627607a20a7db299137187886a7523')
+
+_build_env() {
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR="$srcdir/target"
+    export CARGO_BUILD_TARGET
+    CARGO_BUILD_TARGET=$(rustc -vV | sed -n 's/^host: //p')
+    export CARGO_PROFILE_RELEASE_LTO=fat
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+}
+
+pkgver() {
+    cd "$srcdir/browser-relay" || return
+    local version
+    version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+    printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd "$srcdir/browser-relay" || return
+    _build_env
+    cargo fetch --locked --target "$CARGO_BUILD_TARGET"
+}
+
+build() {
+    cd "$srcdir/browser-relay" || return
+    _build_env
+    cargo build --frozen --release --bin browser-relay
+}
+
+check() {
+    cd "$srcdir/browser-relay" || return
+    _build_env
+    cargo test --frozen --release --all-features
+    desktop-file-validate "$srcdir/browser-relay.desktop"
+}
+
+package() {
+    cd "$srcdir/browser-relay" || return
+    _build_env
+    install -Dm755 "$CARGO_TARGET_DIR/$CARGO_BUILD_TARGET/release/browser-relay" "$pkgdir/usr/bin/browser-relay"
+    install -Dm644 "$srcdir/browser-relay.desktop" "$pkgdir/usr/share/applications/browser-relay.desktop"
+    install -Dm644 assets/browser-relay.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/browser-relay.svg"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

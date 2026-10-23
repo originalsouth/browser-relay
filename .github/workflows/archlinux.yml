@@ -1,0 +1,88 @@
+name: Arch Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 60
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git rust gtk4 pkgconf ca-certificates hicolor-icon-theme desktop-file-utils namcap
+          useradd --create-home builder
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Test AUR synchronization
+        run: python3 tests/aur_publish.py
+      - name: Build and test PKGBUILD as an unprivileged user
+        shell: bash
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          install -dm755 -o builder -g builder /tmp/aur-output
+          runuser -u builder -- packaging/aur/ci-build.sh "$GITHUB_WORKSPACE" /tmp/aur-output
+      - name: Lint package and install smoke test
+        shell: bash
+        run: |
+          namcap /tmp/aur-output/aur/browser-relay-git/PKGBUILD /tmp/aur-output/packages/*.pkg.tar.zst | tee /tmp/aur-output/namcap.log
+          if grep -q ' E: ' /tmp/aur-output/namcap.log; then exit 1; fi
+          pacman -U --noconfirm /tmp/aur-output/packages/*.pkg.tar.zst
+          /usr/bin/browser-relay --version
+          desktop-file-validate /usr/share/applications/browser-relay.desktop
+      - name: Upload package and AUR submission files
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-relay-archlinux-x86_64
+          path: |
+            /tmp/aur-output/packages/*.pkg.tar.zst
+            /tmp/aur-output/browser-relay-git-aur.tar.gz
+            /tmp/aur-output/source-commit.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: archlinux-package-logs
+          path: /tmp/aur-output/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  publish:
+    name: Publish AUR recipe
+    needs: package
+    if: >-
+      vars.AUR_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'originalsouth/browser-relay' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: aur
+    concurrency:
+      group: aur-browser-relay-git
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish tested recipe changes
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_KNOWN_HOSTS: ${{ secrets.AUR_KNOWN_HOSTS }}
+          AUR_GIT_NAME: ${{ vars.AUR_GIT_NAME }}
+          AUR_GIT_EMAIL: ${{ vars.AUR_GIT_EMAIL }}
+        run: ./packaging/aur/publish.sh

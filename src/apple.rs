@@ -45,7 +45,7 @@ fn reserve_route(routes: &mut HashMap<u64, RouteEntry>) {
 }
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 // A decoded index, validation scratch and any derived lookalike index share this allowance.
-// Serialize memory-heavy local operations; never retain indexes in the extension.
+// Serialize memory-heavy local operations; release indexes between operations.
 const INDEX_MEMORY: usize = 32 * 1024 * 1024;
 const READ_BUFFER: usize = 64 * 1024;
 const MAX_GEO: usize = 16 * 1024 * 1024;
@@ -53,7 +53,7 @@ const MAX_METADATA: usize = 65536;
 static LOCAL_WORK: Mutex<()> = Mutex::new(());
 fn index_budget(size: u64, limit: usize) -> Result<usize> {
     if size > limit as u64 {
-        return Err("Index exceeds the mobile lookup memory budget; previous index kept.".into());
+        return Err("Index exceeds the Apple lookup memory budget; previous index kept.".into());
     }
     limit
         .checked_sub(READ_BUFFER)
@@ -501,7 +501,7 @@ fn request(value: &Value) -> Result<Value> {
                 .len()
                 > MAX_GEO as u64
             {
-                return Err("Use an MMDB database under 16 MiB on mobile.".into());
+                return Err("Use an MMDB database under 16 MiB for local GeoIP.".into());
             }
             let location = crate::geo::lookup(&path, ip)?;
             Ok(
@@ -594,7 +594,7 @@ mod tests {
     static TEST_STATE: Mutex<()> = Mutex::new(());
     #[test]
     fn over_budget_updates_preserve_the_existing_indexes() {
-        let root = std::env::temp_dir().join(format!("relay-mobile-budget-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("relay-apple-budget-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let snapshot = Snapshot {
             big: crate::domain_list::List::parse("||example.org^").unwrap(),
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn mobile_reuses_host_factors_and_invalidates_replaced_lists() {
+    fn apple_reuses_host_factors_and_invalidates_replaced_lists() {
         let root = std::env::temp_dir().join(format!("relay-risk-reuse-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let first = Rankings::parse("1,paypal.com", "TEST", "date", 0).unwrap();
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn risk_op_uses_local_rankings_and_bounds_hops() {
-        let root = std::env::temp_dir().join(format!("relay-mobile-risk-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("relay-apple-risk-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let ranks = Rankings::parse("1,paypal.com", "TEST", "2026-10-15T00:00:00Z", 1).unwrap();
         fs::write(root.join("tranco.bin"), ranks.encode()).unwrap();
@@ -757,7 +757,7 @@ mod tests {
             .is_err()
         );
         let empty =
-            std::env::temp_dir().join(format!("relay-mobile-risk-empty-{}", std::process::id()));
+            std::env::temp_dir().join(format!("relay-apple-risk-empty-{}", std::process::id()));
         fs::create_dir_all(&empty).unwrap();
         let report =
             request(&json!({"op":"risk","directory":empty,"link":"https://paypa1.com/","hops":[]}))
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn insights_keep_early_warnings_and_the_final_host() {
-        let root = std::env::temp_dir().join(format!("relay-mobile-hosts-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("relay-apple-hosts-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let snapshot = Snapshot {
             big: crate::domain_list::List::parse("||bad.example^").unwrap(),
@@ -959,7 +959,7 @@ mod tests {
         assert!(request(&json!({"op":"route_response","id":0,"status":200})).is_err());
     }
     #[test]
-    fn mobile_uses_shared_consent_and_budget() {
+    fn apple_uses_shared_consent_and_budget() {
         let _serial = TEST_STATE.lock().unwrap();
         let value = request(&json!({"op":"route_start","url":"http://example.com/"})).unwrap();
         let id = value["id"].as_u64().unwrap();

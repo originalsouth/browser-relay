@@ -5,7 +5,7 @@ pub mod certificate_history;
 pub mod ct_logs;
 pub mod ct_proof;
 pub mod display_text;
-#[cfg(any(feature = "desktop", feature = "mobile"))]
+#[cfg(any(feature = "desktop", feature = "apple"))]
 pub mod geo;
 pub mod insights;
 pub mod registration;
@@ -13,11 +13,11 @@ pub mod risk;
 pub mod route;
 pub mod transparency;
 pub type Cancel = std::sync::Arc<std::sync::atomic::AtomicBool>;
+#[cfg(feature = "apple")]
+mod apple;
 pub mod domain_list;
 pub mod link;
 pub mod lookalike;
-#[cfg(feature = "mobile")]
-mod mobile;
 pub mod qr;
 pub type Result<T> = std::result::Result<T, String>;
 

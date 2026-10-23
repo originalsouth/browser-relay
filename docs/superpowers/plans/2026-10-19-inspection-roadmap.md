@@ -26,7 +26,7 @@ cancellation that drops all work. The *assessment* is weak:
 2. **Local first.** Default checks send nothing beyond what Inspect already sends.
    Every online check is opt-in and shows exactly what it shares.
 3. **Shared core.** Logic lives in the library (`src/lib.rs` modules) so the
-   desktop and iOS apps agree; platforms only do transport and UI.
+   desktop and macOS apps agree; platforms only do transport and UI.
 4. **Measured.** Heuristic thresholds are tuned against a labeled corpus, and
    their false-positive rates are published in `docs/reference.md`.
 
@@ -38,9 +38,9 @@ Tranco top-10k brand (Unicode TR39 skeletons), brand embedded in another domain
 (combosquatting), one-edit near-miss, newly issued certificate (ignoring
 short-lived ACME profiles), bare IP host, non-standard port, link shortener,
 embedded destination parameter, cross-site redirect, plain HTTP, server refused
-the check. Desktop "Risk factors" card, iOS bridge op, evaluation harness with
+the check. Desktop "Risk factors" card, macOS bridge op, evaluation harness with
 measured false-positive rates.
-**Done when:** factors show on desktop and are exposed over the iOS bridge;
+**Done when:** factors show on desktop and are exposed over the macOS bridge;
 lookalike-family false positives below 0.5% on the benign corpus.
 
 ### Phase 2 — Probe fidelity

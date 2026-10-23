@@ -37,9 +37,9 @@ struct DataView: View {
                 }
                 Section("Privacy") {
                     Text("List updates contact big.oisd.nl, nsfw.oisd.nl and tranco-list.eu. Publishers see your network address and requests for their public datasets. Your inspected addresses are never included. These downloads need no account or API key. CT key updates contact www.gstatic.com for two public signed-metadata files, without sending an inspected link.")
-                    Text("The app and Share extension share these files when their App Group is provisioned. Otherwise each has its own local storage.")
+                    Text("Indexes and imported GeoIP data stay in this Mac’s Application Support/BrowserRelay folder.")
                 }
-            }.navigationTitle("Local data")
+            }.formStyle(.grouped).navigationTitle("Local data")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
                 .confirmationDialog("Download public datasets?", isPresented: $confirm, titleVisibility: .visible) {
                     Button("Download from OISD and Tranco") { update() }

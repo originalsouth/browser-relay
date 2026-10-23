@@ -1,7 +1,7 @@
 //! Explainable risk factors from the observed route and local indexes. No
 //! network access and no score: each factor states its evidence and what to
 //! do, and an empty list never means safe. Presentation helpers here are
-//! shared by the GTK and iOS interfaces so both read the same.
+//! shared by the GTK and macOS interfaces so both read the same.
 use crate::{
     domain_list::Rankings,
     link::{host, public_ip, public_name, site_domain},
@@ -380,7 +380,7 @@ fn certificate_age(name: &str, validity: Validity, now: i64, factors: &mut Vec<F
     ));
 }
 
-/// Plain-text rendering for the details log and the iOS bridge.
+/// Plain-text rendering for the details log and the macOS bridge.
 pub fn detail(factors: &[Factor]) -> String {
     if factors.is_empty() {
         return "None in the observed route. Offline checks only; this does not establish that the site is safe.".into();
