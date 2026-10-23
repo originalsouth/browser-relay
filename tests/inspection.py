@@ -40,7 +40,11 @@ def key(name):
 
 def capture_text(popup, destination):
     command('import', '-window', popup, str(destination))
-    text = command('tesseract', str(destination), 'stdout')
+    # Small GTK labels are otherwise misread on Ubuntu's font/rendering stack.
+    # Keep the original screenshot for pixel coordinates and diagnostics.
+    enlarged = destination.with_name(destination.stem + '-ocr.png')
+    command('convert', str(destination), '-resize', '300%', str(enlarged))
+    text = command('tesseract', str(enlarged), 'stdout', '--psm', '11')
     destination.with_suffix('.txt').write_text(text)
     return text
 
